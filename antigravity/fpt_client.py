@@ -18,8 +18,11 @@ from typing import Any
 BASE_URL = "https://mkp-api.fptcloud.com"
 CHAT_PATH = "/chat/completions"
 
-# fast/cheap model for NLU slot extraction (per project handoff)
-NLU_MODEL = "google/gemma-3-12b-it"
+# fast model for NLU slot extraction. Picked from the live FPT model list
+# (GET /v1/models) — the handoff's "google/gemma-3-12b-it" is NOT available.
+# gemma-4-26B-A4B-it is an MoE (~4B active) => fastest correct-JSON extractor
+# measured (~630ms vs 1.2s gemma-3-27b, 1.9s gpt-oss-20b), well under the 3s SLA.
+NLU_MODEL = "gemma-4-26B-A4B-it"
 
 
 class FPTError(RuntimeError):
