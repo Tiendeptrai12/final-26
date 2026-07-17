@@ -29,6 +29,15 @@ class FPTError(RuntimeError):
 def _api_key() -> str:
     key = os.environ.get("FPT_API_KEY", "").strip()
     if not key:
+        # standalone callers (scripts/nlu) don't import core, so .env may be unloaded.
+        # Load it lazily once; no-op when core already loaded it (backend path).
+        try:
+            from antigravity.core import BASE_DIR, load_env
+            load_env(os.path.join(BASE_DIR, ".env"))
+        except Exception:
+            pass
+        key = os.environ.get("FPT_API_KEY", "").strip()
+    if not key:
         raise FPTError("FPT_API_KEY not set in environment")
     return key
 
@@ -65,6 +74,10 @@ def chat_completion(
         headers={
             "Authorization": f"Bearer {_api_key()}",
             "Content-Type": "application/json",
+            # FPT sits behind Cloudflare, which 403s (code 1010) the default
+            # "Python-urllib" agent. Present a normal client UA.
+            "User-Agent": "Mozilla/5.0 (compatible; DMX-Advisor/1.0)",
+            "Accept": "application/json",
         },
     )
     try:
