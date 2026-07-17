@@ -217,13 +217,16 @@ def _item_to_dict(it: RankedItem) -> dict[str, Any]:
 def build_chat_response(
     text: str, history: list[dict[str, str]] | None = None, *,
     records: list[dict[str, Any]] | None = None, n: int = 3, timeout: float = 3.0,
+    explain: bool = True,
 ) -> dict[str, Any]:
     """Wrap advise() into a flat, frontend-friendly, JSON-safe contract.
 
     Shape:
       {query, mode: "need_info"|"recommendation", message, questions[], profile{},
-       items[], relaxations[], safety_checked}
-    Prices/specs come ONLY from ranked records (code), never from the LLM.
+       items[], relaxations[], explanation, safety_checked}
+    Prices/specs come ONLY from ranked records (code), never from the LLM. `explanation`
+    is grounded Top-3 trade-off prose (Call B); None if disabled or the explainer fails
+    (deterministic per-item reasons[] still carry the grounding).
     """
     out = advise(text, history, records=records, n=n, timeout=timeout)
     base: dict[str, Any] = {
@@ -232,6 +235,7 @@ def build_chat_response(
         "questions": [],
         "items": [],
         "relaxations": [],
+        "explanation": None,
         "safety_checked": True,
     }
 
@@ -254,4 +258,8 @@ def build_chat_response(
         base["message"] = "Đây là Top gợi ý phù hợp nhất với nhu cầu của bạn:"
         if result.relaxations:
             base["message"] += " (đã nới nhẹ tiêu chí: " + ", ".join(result.relaxations) + ")"
+        if explain:
+            from antigravity.explainer import explain_top
+            profile = NeedProfile(**out["profile"])
+            base["explanation"] = explain_top(base["items"], profile)
     return base

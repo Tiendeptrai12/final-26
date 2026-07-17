@@ -163,13 +163,26 @@ def test_chat_response_recommendation(monkeypatch):
         _rec("A", 10_000_000, 15, 20, 30, 6.2),
         _rec("B", 18_000_000, 15, 20, 42, 4.5),
     ]
-    resp = nlu.build_chat_response("máy lạnh 20 triệu phòng 18m2 êm", records=records)
+    resp = nlu.build_chat_response("máy lạnh 20 triệu phòng 18m2 êm", records=records,
+                                   explain=False)
     assert resp["mode"] == "recommendation"
     assert resp["items"] and resp["items"][0]["product_id"] == "A"
     assert "price" in resp["items"][0] and "reasons" in resp["items"][0]
     assert resp["safety_checked"] is True
+    assert resp["explanation"] is None  # explain disabled
     # JSON-serializable (no dataclasses leak into the contract)
     json.dumps(resp, ensure_ascii=False)
+
+
+def test_chat_response_includes_explanation(monkeypatch):
+    _mock_llm(monkeypatch, {"budget_max": 20000000, "area_m2": 18, "priority": "quiet"})
+    from antigravity import explainer
+    monkeypatch.setattr(explainer, "explain_top",
+                        lambda items, profile, **k: "Daikin êm hơn, LG tiết kiệm điện hơn.")
+    resp = nlu.build_chat_response("máy lạnh 20 triệu 18m2 êm",
+                                   records=[_rec("A", 10_000_000, 15, 20, 30, 6.2)],
+                                   explain=True)
+    assert resp["explanation"] == "Daikin êm hơn, LG tiết kiệm điện hơn."
 
 
 def test_chat_response_need_info(monkeypatch):
