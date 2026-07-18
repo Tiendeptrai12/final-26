@@ -24,6 +24,11 @@ from antigravity.aircon_ranking import (
     PRIORITIES, ROOM_TYPES, NeedProfile, RankedItem, RankResult, rank_top,
 )
 
+# Hard cap for the optional few-shot/guideline enrichment lookup (Qdrant). Live-verify
+# measured cold opens at ~15-17s and warm at ~3s — both too slow for a "nice to have"
+# prompt addition, so this is capped tight and just skipped past on timeout.
+FEW_SHOT_TIMEOUT = 0.5
+
 # required slots are category-aware (see missing_slots): every ngành cần category + budget;
 # máy lạnh cần thêm diện tích. Phase 3 chỉ có aircon; giờ đa ngành.
 FOLLOWUP_QUESTIONS = {
@@ -222,20 +227,40 @@ def extract_need_profile(
     """
     # Few-shot + segment guidelines are OPTIONAL enrichment (Qdrant/vector_db). Import and
     # call inside one guard so NLU still works if qdrant_client/vector_db is unavailable.
+    # Live-verify finding: on a cold process, Qdrant's local storage.sqlite (125MB) takes
+    # ~15-17s to mmap/open on first use, and even warm the LlamaIndex retrieval path costs
+    # ~3s — either one alone can blow the <5s turn SLA for what is purely optional prompt
+    # enrichment. Cap it with a hard deadline (FEW_SHOT_TIMEOUT) via a worker thread so a
+    # slow/cold vector store degrades to "no enrichment" instead of stalling the whole turn.
     few_shot_str = ""
     guideline = ""
     lower = text.lower()
     try:
-        from antigravity.vector_db import search_few_shots
-        from antigravity.few_shot import get_segment_guidelines_prompt, get_few_shot_prompt
-        few_shot_str = get_few_shot_prompt(search_few_shots(text, limit=2))
-        seg = ("Máy lạnh" if ("máy lạnh" in lower or "điều hòa" in lower)
-               else "Tủ lạnh" if "tủ lạnh" in lower
-               else "Laptop" if "laptop" in lower
-               else "Pc, máy in" if ("pc" in lower or "máy tính" in lower)
-               else None)
-        if seg:
-            guideline = get_segment_guidelines_prompt(seg)
+        from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+
+        def _lookup():
+            from antigravity.vector_db import search_few_shots
+            from antigravity.few_shot import get_segment_guidelines_prompt, get_few_shot_prompt
+            fs = get_few_shot_prompt(search_few_shots(text, limit=2))
+            seg = ("Máy lạnh" if ("máy lạnh" in lower or "điều hòa" in lower)
+                   else "Tủ lạnh" if "tủ lạnh" in lower
+                   else "Laptop" if "laptop" in lower
+                   else "Pc, máy in" if ("pc" in lower or "máy tính" in lower)
+                   else None)
+            gl = get_segment_guidelines_prompt(seg) if seg else ""
+            return fs, gl
+
+        # NOT a `with` block on purpose: ThreadPoolExecutor.__exit__ calls shutdown(wait=True),
+        # which would block until the slow/cold lookup finishes anyway — defeating the
+        # timeout. shutdown(wait=False) lets this turn move on; the orphaned thread just
+        # finishes in the background and its result is discarded.
+        ex = ThreadPoolExecutor(max_workers=1)
+        try:
+            few_shot_str, guideline = ex.submit(_lookup).result(timeout=FEW_SHOT_TIMEOUT)
+        finally:
+            ex.shutdown(wait=False)
+    except _FutTimeout:
+        pass  # cold/slow vector store -> skip enrichment this turn, never block on it
     except Exception:
         pass
 

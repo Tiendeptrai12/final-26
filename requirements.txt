@@ -5,3 +5,12 @@ pyyaml
 openpyxl
 jsonschema
 pytest
+pytest-asyncio
+httpx
+dirtyjson
+qdrant-client
+llama-index-core
+llama-index-vector-stores-qdrant
+transformers
+torch
+sentencepiece

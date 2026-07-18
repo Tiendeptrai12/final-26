@@ -31,6 +31,11 @@ EXPLAIN_MODEL = os.environ.get("EXPLAIN_MODEL") or _DEFAULT_MODELS.get(EXPLAIN_P
 # returns empty content (finish_reason=length). Disabling thinking makes it answer directly.
 _GLM_NOTHINK = {"chat_template_kwargs": {"enable_thinking": False}}
 
+# Hard cap for the optional "quy tắc ứng xử/pháp lý" rules lookup (Qdrant + local Vietnamese
+# correction model). Live-verify measured this alone taking 22-169s cold (unauthenticated HF
+# Hub model download) with no timeout — capped tight since it's pure enrichment, never core.
+RULES_LOOKUP_TIMEOUT = 0.5
+
 _SYSTEM = (
     "Bạn là tư vấn viên máy lạnh của Điện Máy Xanh. Bạn nhận một danh sách sản phẩm ĐÃ được "
     "hệ thống lọc và xếp hạng, kèm số liệu. Nhiệm vụ: viết đoạn tư vấn tiếng Việt ngắn gọn, "
@@ -89,6 +94,10 @@ def explain_top(
     if not items:
         return None
 
+    # Live-verify finding: search_rules() (vector_db) triggers correct_text()'s lazy HF model
+    # load (bmd1905/vietnamese-correction-v2, unauthenticated Hub) with NO timeout — measured
+    # 22s-169s cold, alone blowing the <5s SLA. Same class of bug as the Call A few-shot
+    # lookup; capped the same way: hard deadline via a worker thread, fail-open on timeout.
     rules_block = ""
     search_query = query
     if not search_query and items:
@@ -97,10 +106,21 @@ def explain_top(
             search_query = " ".join(brands)
     if search_query:
         try:
-            from antigravity.vector_db import search_rules
-            rules = search_rules(search_query, limit=2)
+            from concurrent.futures import ThreadPoolExecutor, TimeoutError as _FutTimeout
+
+            def _rules_lookup():
+                from antigravity.vector_db import search_rules
+                return search_rules(search_query, limit=2)
+
+            ex = ThreadPoolExecutor(max_workers=1)
+            try:
+                rules = ex.submit(_rules_lookup).result(timeout=RULES_LOOKUP_TIMEOUT)
+            finally:
+                ex.shutdown(wait=False)  # don't block on a cold/slow lookup; let it die in bg
             if rules:
                 rules_block = "\n\nQUY TẮC ỨNG XỬ/PHÁP LÝ BẮT BUỘC:\n" + "\n".join(f"- {r}" for r in rules)
+        except _FutTimeout:
+            pass
         except Exception:
             pass
 
