@@ -22,12 +22,17 @@ PROCESSED_DIR = BASE_DIR / "data" / "processed"
 
 
 def catalog_source() -> str:
-    """'btc' or 'mock' (default). Nothing here flips the app automatically."""
+    """'dmx', 'btc', or 'mock' (default). Nothing here flips the app automatically."""
     return os.environ.get("CATALOG_SOURCE", "mock").strip().lower()
 
 
 def is_btc_enabled() -> bool:
     return catalog_source() == "btc"
+
+
+def is_real_catalog() -> bool:
+    """True when a real product catalog (DMX or BTC) is selected, not the mock."""
+    return catalog_source() in ("dmx", "btc")
 
 
 @lru_cache(maxsize=None)
@@ -89,5 +94,14 @@ def load_jsonl(path: str | Path, validate_schema: bool = True) -> Iterator[dict[
             yield validate_record(record, validate_schema)
 
 
-def load_category(category: str, validate_schema: bool = True) -> list[dict[str, Any]]:
-    return list(load_jsonl(PROCESSED_DIR / f"btc_{category}.all.jsonl", validate_schema))
+def load_category(category: str, validate_schema: bool | None = None) -> list[dict[str, Any]]:
+    """Load a category from the selected source (dmx > btc).
+
+    DMX records carry new top-level fields not yet in the Stage 1 schemas, so schema
+    validation defaults OFF for dmx (pid + stock-unknown checks still apply); P2 will
+    add DMX schemas. Explicit validate_schema overrides the per-source default.
+    """
+    prefix = "dmx" if catalog_source() == "dmx" else "btc"
+    if validate_schema is None:
+        validate_schema = prefix == "btc"
+    return list(load_jsonl(PROCESSED_DIR / f"{prefix}_{category}.all.jsonl", validate_schema))

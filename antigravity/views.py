@@ -34,7 +34,7 @@ async def chat_endpoint(request: QueryRequest):
     if not request.query.strip():
         raise HTTPException(status_code=400, detail="Query cannot be empty")
     try:
-        if btc_catalog.is_btc_enabled():
+        if btc_catalog.is_real_catalog():
             from antigravity.nlu import build_chat_response
             return build_chat_response(request.query)
         return advisor.query_advisor(request.query)

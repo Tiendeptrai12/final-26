@@ -31,7 +31,25 @@ work-tmp/
 # BTC hackathon data (NDA) - do not commit
 data/raw/
 data/processed/btc_*
+data/processed/dmx_*
 artifacts/btc_*
+artifacts/dmx_*
+
+# DMX organizer resources (NDA — "đừng share bên ngoài") - do not commit
+DMX_product.zip
+products_detail.*
+*chat_history*.json
+35sample_chat_history*.json
+newnotefromref.md
+chat_luong_phuc_vu.md
+chinh_sach_*.md
+dieu-khoang-su-dung.md
+noi_quy_cua_hang.md
+Insights for PM.docx
+DMX_AI_Advisor_PM_Brief.docx
+Dien-May-Xanh-Enterprise-Problem-Brief.md
+AI Product Comparison Advisor Based.txt
+data/dmx/
 
 # Large vendored libs / assets (local only)
 libs/
