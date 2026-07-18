@@ -45,6 +45,16 @@ guardrails_config:
         (price, noise dB, CSPF/stars, area range, inverter). No comparative claims
         the data can't support.
 
+    - name: accessory_suggestion
+      on_fail: refuse
+      description: >
+        Cross-sell accessories only when necessary and grounded. NEVER suggest for
+        standalone products (lò vi sóng, nồi cơm, quạt, bàn ủi, tủ lạnh, máy giặt… — any
+        category not in accessory_rules). NEVER suggest an accessory already bundled in
+        the box (product "Phụ kiện đi kèm" — e.g. laptop charger). Only offer accessory
+        types relevant to the product's category, and only REAL accessory SKUs from the
+        catalog (real id/name/price/url) — never invent an accessory or its price.
+
     - name: vietnamese_politeness
       on_fail: correct
       description: "Tone polite, helpful, natural Vietnamese. Concise, no filler."
@@ -83,3 +93,9 @@ code_rules:
     behavior: >
       Không loop vô tận. Hết ladder vẫn 0 -> trả lời "Chưa có sản phẩm phù hợp với
       tiêu chí này" + gợi ý nới tiêu chí, KHÔNG bịa sản phẩm.
+  accessory_suggestion:                           # cross-sell necessity + grounding
+    owner: "antigravity/accessory.py :: ACCESSORY_MAP / needed_accessory_categories / suggest_accessories"
+    necessity: "category in ACCESSORY_MAP AND accessory type not already in-box (Phụ kiện đi kèm)"
+    standalone_no_suggest: ["Lò vi sóng", "Nồi cơm điện", "Quạt các loại", "Bàn ủi",
+                            "Tủ lạnh", "Máy giặt", "Bình đun siêu tốc"]
+    grounding: "accessories are real catalog SKUs only (id/name/price/url) — never fabricated"
