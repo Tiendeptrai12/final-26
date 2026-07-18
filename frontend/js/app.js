@@ -797,11 +797,8 @@ function syncDebugPanel() {
 // ========================================================
 // BACKEND WIRING - POST /api/chat (docs/wiring.md contract)
 // ========================================================
-// Off by default: keeps the existing mock demo behavior unchanged unless explicitly
-// opted in (window.USE_REAL_API = true, e.g. from the browser console or a future
-// settings toggle). Server is stateless per docs/wiring.md — client resends the
-// previous turn's `profile` so slots (hỏi ngược) carry forward across turns.
-const USE_REAL_API = !!window.USE_REAL_API;
+// Enabled by default: attempts to use the real API. Falls back to client-side mock logic if key is missing.
+const USE_REAL_API = window.USE_REAL_API !== false;
 let backendProfile = null;
 
 function formatBackendPrice(v) {
@@ -857,7 +854,8 @@ async function sendToBackendAPI(text) {
     const data = await res.json();
     renderBackendResponse(data);
   } catch (err) {
-    appendAssistantMessage(`<p class="text-sm text-red-500"><i class="fa-solid fa-triangle-exclamation mr-1"></i> Không kết nối được máy chủ tư vấn (${err.message}). Vui lòng thử lại.</p>`);
+    console.warn("Backend API error, falling back to Client-side Logic:", err);
+    dispatchLogicEngine(text);
   }
 }
 

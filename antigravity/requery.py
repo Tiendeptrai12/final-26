@@ -16,7 +16,7 @@ from typing import Any
 from antigravity import fpt_client
 
 INBOUND_MODEL = "gemma-4-26B-A4B-it"   # fast; only normalizes
-OUTBOUND_MODEL = "gemma-4-31B-it"      # natural VN prose
+OUTBOUND_MODEL = "GLM-5.2"             # strongest reasoning model for natural VN prose
 
 _INBOUND_SYSTEM = (
     "Bạn là bộ chuẩn hoá câu hỏi mua điện máy. Viết lại tin nhắn tiếng Việt của khách thành "

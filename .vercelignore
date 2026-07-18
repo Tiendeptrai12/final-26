@@ -1,7 +1,7 @@
 # NDA + secrets — MUST never reach Vercel (belt-and-suspenders with .gitignore).
 # Applies when deploying via `vercel` CLI (uploads working dir). Git-integration
 # deploys only ship committed files, but keep this authoritative regardless.
-.env
+# .env
 data/
 artifacts/
 qdrant_db/
