@@ -97,10 +97,13 @@ class ProductAdvisor:
                 # Format to include original fields for display
                 formatted_results = []
                 for p in results:
+                    name = p.get("tên sản phẩm") or p.get("name") or p.get("product_id") or "Sản phẩm"
+                    price_val = p.get("Giá khuyến mãi") or p.get("Giá gốc") or p.get("price") or 0
+                    price_str = f"{int(price_val):,}đ" if isinstance(price_val, (int, float)) else str(price_val)
                     formatted_results.append({
                         "id": p.get("product_id", ""),
-                        "name": p.get("name") or p.get("product_id") or "Sản phẩm",
-                        "price": f"{p.get('price', 0):,}đ" if isinstance(p.get('price'), (int, float)) else str(p.get('price', '')),
+                        "name": name,
+                        "price": price_str,
                         "brand": p.get("brand", "")
                     })
                 return formatted_results

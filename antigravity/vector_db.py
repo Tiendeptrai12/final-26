@@ -1,6 +1,15 @@
-"""Vector database management for catalog retrieval and few-shot dialog matching.
+"""Two-purpose vector DB (Qdrant + FPT Vietnamese_Embedding).
 
-Integrates Qdrant with LlamaIndex using FPT's Vietnamese_Embedding model.
+Two separate collections, on purpose:
+  1. `catalog_products`  — ANTI-HALLUCINATION grounding. Embeds real DMX products
+     (products_detail.json). Retrieval returns real product facts so the Top-3 the
+     advisor shows are actual SKUs with actual price/spec — never invented.
+  2. `few_shot_chats`    — SEMANTIC RESPONSE style. Embeds real employee↔customer
+     dialogue (chat_history_buy_product.json + 35 sample chats) so the assistant can
+     mirror how real DMX staff advise, retrieved by similarity to the current query.
+
+Sources are the in-repo (gitignored, NDA) data copies so the module is portable —
+no machine-specific absolute paths. Rebuild locally: initialize_vector_db(force_reindex=True).
 """
 from __future__ import annotations
 
@@ -22,7 +31,12 @@ logger = logging.getLogger(__name__)
 
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 QDRANT_PATH = os.path.join(BASE_DIR, "qdrant_db")
-PROCESSED_DATA_DIR = os.path.join(BASE_DIR, "data", "processed")
+# In-repo NDA copy (gitignored) — portable, not a machine-specific D:\ path.
+# Override with DMX_CATALOG_PATH if the raw json lives elsewhere.
+NEW_CATALOG_PATH = os.environ.get(
+    "DMX_CATALOG_PATH",
+    os.path.join(BASE_DIR, "data", "raw", "dmx", "products_detail.json"),
+)
 
 class FPTEmbedding(BaseEmbedding):
     """Custom LlamaIndex Embedding model wrapper around FPT's Vietnamese_Embedding."""
@@ -37,7 +51,6 @@ class FPTEmbedding(BaseEmbedding):
                 return vectors[0]
         except Exception as e:
             logger.error(f"FPT query embedding failed: {e}")
-        # Fallback to zero vector if embedding fails
         return [0.0] * 1024
         
     async def _aget_query_embedding(self, query: str) -> List[float]:
@@ -66,15 +79,20 @@ class FPTEmbedding(BaseEmbedding):
                 results.extend([[0.0] * 1024 for _ in chunk])
         return results
 
-# Initialize local Qdrant Client
-_client = QdrantClient(path=QDRANT_PATH)
+# Lazy singleton: local Qdrant is single-writer, so DO NOT open it at import time —
+# that would lock qdrant_db and block a second Antigravity agent (gemini flash owns
+# few_shot_chats; this side owns catalog_products). Open only when a function needs it.
+_client: QdrantClient | None = None
 
 def get_qdrant_client() -> QdrantClient:
+    global _client
+    if _client is None:
+        _client = QdrantClient(path=QDRANT_PATH)
     return _client
 
 def get_vector_store_index(collection_name: str) -> VectorStoreIndex:
     """Get a LlamaIndex VectorStoreIndex for a given Qdrant collection."""
-    vector_store = QdrantVectorStore(client=_client, collection_name=collection_name)
+    vector_store = QdrantVectorStore(client=get_qdrant_client(), collection_name=collection_name)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
     return VectorStoreIndex.from_vector_store(
         vector_store=vector_store,
@@ -84,62 +102,60 @@ def get_vector_store_index(collection_name: str) -> VectorStoreIndex:
 
 def format_product_for_embedding(product: dict[str, Any]) -> str:
     """Format product metadata into a rich text string for vector search."""
-    name = product.get("name") or product.get("product_id") or ""
+    name = product.get("tên sản phẩm") or product.get("product_id") or ""
     brand = product.get("brand") or ""
-    category = product.get("category") or ""
-    price = product.get("price") or product.get("original_price") or 0
-    spec = product.get("spec") or {}
+    category = product.get("category_name") or ""
+    price_original = product.get("Giá gốc") or 0
+    price_promo = product.get("Giá khuyến mãi") or 0
+    price = price_promo if price_promo > 0 else price_original
+    spec = product.get("spec_product") or {}
     spec_str = ", ".join([f"{k}: {v}" for k, v in spec.items() if v is not None])
     return f"Sản phẩm: {name}. Hãng: {brand}. Ngành hàng: {category}. Giá: {price:,}đ. Thông số: {spec_str}."
 
 def initialize_vector_db(force_reindex: bool = False) -> None:
     """Build Qdrant collections for products and few-shots if they don't exist."""
-    collections = _client.get_collections()
+    client = get_qdrant_client()
+    collections = client.get_collections()
     existing_names = [col.name for col in collections.collections]
     
-    # 1. Initialize Product Catalog
+    # 1. Initialize Product Catalog from new products_detail.json
     if "catalog_products" not in existing_names or force_reindex:
-        logger.info("Initializing Qdrant collection 'catalog_products'...")
-        # Recreate collection
+        logger.info("Initializing Qdrant collection 'catalog_products' from new catalog...")
         if "catalog_products" in existing_names:
-            _client.delete_collection("catalog_products")
-        _client.create_collection(
+            client.delete_collection("catalog_products")
+        client.create_collection(
             collection_name="catalog_products",
             vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
         )
         
-        # Load and parse products (limit categories and counts to keep index size small/fast)
         nodes = []
-        target_files = ["dmx_air_conditioner.all.jsonl", "btc_refrigerator.all.jsonl", "btc_desktop_pc.all.jsonl"]
-        if os.path.exists(PROCESSED_DATA_DIR):
-            for filename in target_files:
-                file_path = os.path.join(PROCESSED_DATA_DIR, filename)
-                if not os.path.exists(file_path):
-                    continue
-                try:
-                    count = 0
-                    with open(file_path, "r", encoding="utf-8") as f:
-                        for line in f:
-                            line = line.strip()
-                            if not line:
-                                continue
-                            product = json.loads(line)
-                            if product.get("data_quality", {}).get("eligible_for_demo", False):
-                                text = format_product_for_embedding(product)
-                                nodes.append(TextNode(
-                                    text=text,
-                                    metadata={"product_id": product["product_id"], "product_json": json.dumps(product)}
-                                ))
-                                count += 1
-                                if count >= 25:
-                                    break
-                except Exception as e:
-                    logger.error(f"Failed to load products from {filename}: {e}")
+        if os.path.exists(NEW_CATALOG_PATH):
+            try:
+                with open(NEW_CATALOG_PATH, "r", encoding="utf-8") as f:
+                    products = json.load(f)
+                
+                # Filter and index up to 100 products per key category to remain comprehensive yet fast
+                target_categories = ["Máy lạnh", "Tủ lạnh", "Laptop", "Pc, máy in"]
+                category_counts = {cat: 0 for cat in target_categories}
+                
+                for product in products:
+                    cat = product.get("category_name")
+                    if cat in category_counts and category_counts[cat] < 100:
+                        text = format_product_for_embedding(product)
+                        nodes.append(TextNode(
+                            text=text,
+                            metadata={"product_id": product["product_id"], "product_json": json.dumps(product)}
+                        ))
+                        category_counts[cat] += 1
+                logger.info(f"Loaded category counts: {category_counts}")
+            except Exception as e:
+                logger.error(f"Failed to load products from {NEW_CATALOG_PATH}: {e}")
+        else:
+            logger.warning(f"New catalog not found at {NEW_CATALOG_PATH}")
                         
         if nodes:
             logger.info(f"Indexing {len(nodes)} products into 'catalog_products'...")
-            # We build index using LlamaIndex
-            vector_store = QdrantVectorStore(client=_client, collection_name="catalog_products")
+            vector_store = QdrantVectorStore(client=client, collection_name="catalog_products")
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             VectorStoreIndex(nodes, storage_context=storage_context, embed_model=FPTEmbedding())
             logger.info("Product catalog indexing complete.")
@@ -148,13 +164,12 @@ def initialize_vector_db(force_reindex: bool = False) -> None:
     if "few_shot_chats" not in existing_names or force_reindex:
         logger.info("Initializing Qdrant collection 'few_shot_chats'...")
         if "few_shot_chats" in existing_names:
-            _client.delete_collection("few_shot_chats")
-        _client.create_collection(
+            client.delete_collection("few_shot_chats")
+        client.create_collection(
             collection_name="few_shot_chats",
             vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
         )
         
-        # Load, clean, and extract turns from chat history
         conversations = load_and_clean_history()
         turns = extract_dialogue_turns(conversations)
         
@@ -173,7 +188,7 @@ def initialize_vector_db(force_reindex: bool = False) -> None:
             
         if nodes:
             logger.info(f"Indexing {len(nodes)} dialogue turns into 'few_shot_chats'...")
-            vector_store = QdrantVectorStore(client=_client, collection_name="few_shot_chats")
+            vector_store = QdrantVectorStore(client=client, collection_name="few_shot_chats")
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             VectorStoreIndex(nodes, storage_context=storage_context, embed_model=FPTEmbedding())
             logger.info("Few-shot indexing complete.")

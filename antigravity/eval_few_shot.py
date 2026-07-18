@@ -1,4 +1,4 @@
-"""Evaluation script for few-shot slot extraction experiments using Qdrant retrieved logs.
+"""Evaluation script for few-shot and price-segment NLU slot extraction.
 """
 from __future__ import annotations
 
@@ -12,11 +12,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from antigravity.vector_db import search_few_shots, initialize_vector_db
 from antigravity.fpt_client import chat_completion, NLU_MODEL
-from antigravity.nlu import _SYSTEM_PROMPT, coerce_profile
+from antigravity.nlu import _SYSTEM_PROMPT, coerce_profile, extract_need_profile
 
-# Test queries for few-shot experiments
+# Test queries for few-shot & price segment experiments
 TEST_QUERIES = [
-    "Tôi muốn mua cái điều hòa Panasonic giá tầm 12 triệu cho phòng ngủ",
+    # 1. Segment-based queries (using Moc_Phan_Khuc_119_Category.xlsx thresholds)
+    "Tôi muốn mua điều hòa Daikin phân khúc bình dân",
+    "Tư vấn cho mình tủ lạnh Toshiba cao cấp cỡ lớn",
+    "Cần mua laptop Asus phục vụ văn phòng phân khúc trung cấp",
+    
+    # 2. Traditional queries
     "Tìm cho mình tủ lạnh Toshiba hoặc LG cỡ 300 lít tầm 10 triệu đổ lại",
     "Cần một con laptop Asus mỏng nhẹ học tập văn phòng khoảng 15 triệu"
 ]
@@ -25,8 +30,8 @@ def run_experiment(query: str):
     print("=" * 60)
     print(f"TRUY VẤN: {query}\n")
     
-    # 1. Zero-shot slot extraction
-    print("--- 1. Kết quả Zero-shot (Không ví dụ) ---")
+    # 1. Zero-shot slot extraction (Standard Prompt only)
+    print("--- 1. Kết quả Zero-shot (Không có ví dụ & Không có mốc phân khúc) ---")
     zero_shot_messages = [
         {"role": "system", "content": _SYSTEM_PROMPT},
         {"role": "user", "content": query}
@@ -45,45 +50,25 @@ def run_experiment(query: str):
         
     print()
     
-    # 2. Retrieve few-shot examples from Qdrant
-    print("--- 2. Truy xuất ví dụ Few-shot từ Qdrant ---")
+    # 2. Retrieve matched examples from Qdrant
+    print("--- 2. Truy xuất ví dụ tương tự từ Qdrant ---")
     few_shots = search_few_shots(query, limit=2)
     for idx, fs in enumerate(few_shots, 1):
-        print(f"Ví dụ tương đồng {idx}:")
+        print(f"Ví dụ {idx}:")
         print(f"  Khách hàng: {fs['user_query']}")
         print(f"  Trợ lý: {fs['assistant_response'][:120]}...")
     print()
     
-    # 3. Few-shot slot extraction
-    print("--- 3. Kết quả Few-shot (Có ví dụ từ Qdrant) ---")
-    # Build system prompt with retrieved few-shot context
-    few_shot_prompt = _SYSTEM_PROMPT + "\n\nDưới đây là một số ví dụ tham khảo:\n"
-    for fs in few_shots:
-        # Generate expected NeedProfile JSON for the few-shot examples to teach the model how to extract
-        # (This acts as few-shot demonstration of the NLU extraction task)
-        few_shot_prompt += f'Khách hàng: "{fs["user_query"]}"\n'
-        # We can construct a mock JSON that matches the format
-        few_shot_prompt += 'Trả về: '
-        if " Panasonic" in fs["user_query"] or "máy lạnh" in fs["user_query"]:
-            few_shot_prompt += '{"budget_max": 12000000, "budget_min": null, "area_m2": null, "room_type": "bedroom", "sunny": null, "priority": null, "inverter_required": null, "brands": ["Panasonic"]}\n'
-        else:
-            few_shot_prompt += '{"budget_max": 10000000, "budget_min": null, "area_m2": null, "room_type": null, "sunny": null, "priority": null, "inverter_required": null, "brands": []}\n'
-            
-    few_shot_messages = [
-        {"role": "system", "content": few_shot_prompt},
-        {"role": "user", "content": query}
-    ]
+    # 3. Combined NLU Pipeline (Few-Shots + Price Segment thresholds from Excel)
+    print("--- 3. Kết quả Pipeline NLU (Có Few-Shots Qdrant + Mốc giá Excel) ---")
     try:
-        few_shot_raw = chat_completion(NLU_MODEL, few_shot_messages, timeout=5.0)
+        profile, missing, raw_obj = extract_need_profile(query, timeout=5.0)
         print("Raw LLM response:")
-        print(few_shot_raw)
-        try:
-            profile = coerce_profile(json.loads(few_shot_raw))
-            print("Parsed NeedProfile:", vars(profile))
-        except Exception:
-            print("Failed to parse JSON")
+        print(json.dumps(raw_obj, ensure_ascii=False))
+        print("Parsed NeedProfile:", vars(profile))
+        print("Missing slots:", missing)
     except Exception as e:
-        print(f"Few-shot LLM call failed: {e}")
+        print(f"Pipeline NLU call failed: {e}")
     print("=" * 60 + "\n")
 
 def main():

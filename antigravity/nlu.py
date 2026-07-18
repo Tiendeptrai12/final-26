@@ -175,7 +175,36 @@ def extract_need_profile(
     On any LLM/JSON failure returns an empty profile so every required slot reads as
     missing and the caller asks the user to restate (fail-safe, never fabricates).
     """
-    messages: list[dict[str, str]] = [{"role": "system", "content": _SYSTEM_PROMPT}]
+    from antigravity.vector_db import search_few_shots
+    from antigravity.few_shot import get_segment_guidelines_prompt, get_few_shot_prompt
+    
+    # 1. Retrieve matching few-shot examples from Qdrant
+    few_shot_str = ""
+    try:
+        few_shots = search_few_shots(text, limit=2)
+        few_shot_str = get_few_shot_prompt(few_shots)
+    except Exception:
+        pass
+        
+    # 2. Retrieve dynamic segment guidelines based on query category
+    guideline = ""
+    lower = text.lower()
+    if "máy lạnh" in lower or "điều hòa" in lower:
+        guideline = get_segment_guidelines_prompt("Máy lạnh")
+    elif "tủ lạnh" in lower:
+        guideline = get_segment_guidelines_prompt("Tủ lạnh")
+    elif "laptop" in lower:
+        guideline = get_segment_guidelines_prompt("Laptop")
+    elif "pc" in lower or "máy tính" in lower:
+        guideline = get_segment_guidelines_prompt("Pc, máy in")
+        
+    system_prompt = _SYSTEM_PROMPT
+    if guideline:
+        system_prompt += "\n" + guideline
+    if few_shot_str:
+        system_prompt += "\n\n" + few_shot_str
+
+    messages: list[dict[str, str]] = [{"role": "system", "content": system_prompt}]
     if history:
         messages.extend(history)
     messages.append({"role": "user", "content": text})

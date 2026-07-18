@@ -113,3 +113,66 @@ def get_few_shot_prompt(few_shots: list[dict[str, Any]]) -> str:
         prompt += f"Trợ lý Điện Máy Xanh: {fs['assistant_response']}\n"
         prompt += "-" * 20 + "\n"
     return prompt
+
+def load_price_segments() -> dict[str, dict[str, float]]:
+    """Load price segment percentiles from Moc_Phan_Khuc_119_Category.xlsx."""
+    path = "d:/download/Moc_Phan_Khuc_119_Category.xlsx"
+    segments = {}
+    
+    # Static fallback for core categories
+    fallback = {
+        "Laptop": {"low": 15490000.0, "budget": 24690000.0, "mid": 30490000.0, "premium": 39990000.0, "high": 149990000.0},
+        "Tủ lạnh": {"low": 2550000.0, "budget": 11260000.0, "mid": 17190000.0, "premium": 26040000.0, "high": 129000000.0},
+        "Pc, máy in": {"low": 170000.0, "budget": 2490000.0, "mid": 4290000.0, "premium": 13067500.0, "high": 250000000.0},
+        "Máy lạnh": {"low": 7190000.0, "budget": 10990000.0, "mid": 15040000.0, "premium": 25340000.0, "high": 69790000.0}
+    }
+    
+    if not os.path.exists(path):
+        return fallback
+        
+    try:
+        import openpyxl
+        wb = openpyxl.load_workbook(path, data_only=True)
+        sheet = wb.active
+        for row in sheet.iter_rows(min_row=6):
+            vals = [cell.value for cell in row]
+            if len(vals) >= 8 and vals[1] is not None:
+                cat_name = str(vals[1]).strip()
+                segments[cat_name] = {
+                    "low": float(vals[3]) if vals[3] is not None else 0.0,
+                    "budget": float(vals[4]) if vals[4] is not None else 0.0,
+                    "mid": float(vals[5]) if vals[5] is not None else 0.0,
+                    "premium": float(vals[6]) if vals[6] is not None else 0.0,
+                    "high": float(vals[7]) if vals[7] is not None else 0.0
+                }
+    except Exception as e:
+        logger.error(f"Failed to load price segments Excel: {e}")
+        return fallback
+        
+    # Merge missing defaults
+    for k, v in fallback.items():
+        if k not in segments:
+            segments[k] = v
+            
+    return segments
+
+def get_segment_guidelines_prompt(category_name: str) -> str:
+    """Build rules for the LLM to map abstract segment words to exact numeric prices."""
+    segments = load_price_segments()
+    
+    # Normalize category name matching
+    matched_cat = None
+    for cat in segments:
+        if category_name.lower() in cat.lower() or cat.lower() in category_name.lower():
+            matched_cat = cat
+            break
+            
+    if not matched_cat:
+        return ""
+        
+    s = segments[matched_cat]
+    prompt = f"\nQUY TẮC MỐC PHÂN KHÚC GIÁ cho ngành hàng '{matched_cat}' (áp dụng khi khách hàng đề cập phân khúc thay vì số tiền cụ thể):\n"
+    prompt += f"  - 'giá rẻ' / 'bình dân' / 'tiết kiệm': budget_max = {int(s['budget']):,}đ\n"
+    prompt += f"  - 'tầm trung' / 'trung cấp' / 'vừa phải': budget_min = {int(s['budget']):,}đ, budget_max = {int(s['premium']):,}đ\n"
+    prompt += f"  - 'cao cấp' / 'sang trọng' / 'đắt tiền': budget_min = {int(s['premium']):,}đ\n"
+    return prompt
