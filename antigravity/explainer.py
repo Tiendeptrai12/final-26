@@ -78,6 +78,7 @@ def _facts_block(items: list[dict[str, Any]], profile: NeedProfile) -> str:
 
 def explain_top(
     items: list[dict[str, Any]], profile: NeedProfile, *,
+    query: str | None = None,
     model: str = EXPLAIN_MODEL, provider: str = EXPLAIN_PROVIDER,
     timeout: float = 4.0, max_tokens: int = 320,
 ) -> str | None:
@@ -87,8 +88,25 @@ def explain_top(
     """
     if not items:
         return None
+
+    rules_block = ""
+    search_query = query
+    if not search_query and items:
+        brands = {it.get("brand") for it in items if it.get("brand")}
+        if brands:
+            search_query = " ".join(brands)
+    if search_query:
+        try:
+            from antigravity.vector_db import search_rules
+            rules = search_rules(search_query, limit=2)
+            if rules:
+                rules_block = "\n\nQUY TẮC ỨNG XỬ/PHÁP LÝ BẮT BUỘC:\n" + "\n".join(f"- {r}" for r in rules)
+        except Exception:
+            pass
+
+    system_content = _SYSTEM + rules_block
     messages = [
-        {"role": "system", "content": _SYSTEM},
+        {"role": "system", "content": system_content},
         {"role": "user", "content": _facts_block(items, profile)},
     ]
     # GLM reasoning models need thinking off to answer directly (see _GLM_NOTHINK).

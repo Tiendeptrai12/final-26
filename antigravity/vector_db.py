@@ -26,6 +26,7 @@ from llama_index.vector_stores.qdrant import QdrantVectorStore
 
 from antigravity.fpt_services import embed
 from antigravity.few_shot import load_and_clean_history, extract_dialogue_turns
+from antigravity.corrector import correct_text
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +93,7 @@ def get_qdrant_client() -> QdrantClient:
 
 def get_vector_store_index(collection_name: str) -> VectorStoreIndex:
     """Get a LlamaIndex VectorStoreIndex for a given Qdrant collection."""
-    vector_store = QdrantVectorStore(client=get_qdrant_client(), collection_name=collection_name)
+    vector_store = QdrantVectorStore(client=get_qdrant_client(), collection_name=collection_name, path=None)
     storage_context = StorageContext.from_defaults(vector_store=vector_store)
     return VectorStoreIndex.from_vector_store(
         vector_store=vector_store,
@@ -156,7 +157,7 @@ def initialize_vector_db(force_reindex: bool = False) -> None:
                         
         if nodes:
             logger.info(f"Indexing {len(nodes)} products into 'catalog_products'...")
-            vector_store = QdrantVectorStore(client=client, collection_name="catalog_products")
+            vector_store = QdrantVectorStore(client=client, collection_name="catalog_products", path=None)
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             VectorStoreIndex(nodes, storage_context=storage_context, embed_model=FPTEmbedding())
             logger.info("Product catalog indexing complete.")
@@ -189,14 +190,48 @@ def initialize_vector_db(force_reindex: bool = False) -> None:
             
         if nodes:
             logger.info(f"Indexing {len(nodes)} dialogue turns into 'few_shot_chats'...")
-            vector_store = QdrantVectorStore(client=client, collection_name="few_shot_chats")
+            vector_store = QdrantVectorStore(client=client, collection_name="few_shot_chats", path=None)
             storage_context = StorageContext.from_defaults(vector_store=vector_store)
             VectorStoreIndex(nodes, storage_context=storage_context, embed_model=FPTEmbedding())
             logger.info("Few-shot indexing complete.")
+            
+    # 3. Initialize DMX Rules
+    if "dmx_rules" not in existing_names or force_reindex:
+        logger.info("Initializing Qdrant collection 'dmx_rules'...")
+        if "dmx_rules" in existing_names:
+            client.delete_collection("dmx_rules")
+        client.create_collection(
+            collection_name="dmx_rules",
+            vectors_config=VectorParams(size=1024, distance=Distance.COSINE),
+        )
+        
+        rules_path = os.path.join(BASE_DIR, "bo_quy_tac.txt")
+        nodes = []
+        if os.path.exists(rules_path):
+            try:
+                with open(rules_path, "r", encoding="utf-8") as f:
+                    content = f.read()
+                # Split by paragraphs or double newlines
+                paragraphs = [p.strip() for p in content.split("\n") if p.strip()]
+                for idx, p in enumerate(paragraphs):
+                    nodes.append(TextNode(
+                        text=p,
+                        metadata={"rule_idx": idx}
+                    ))
+            except Exception as e:
+                logger.error(f"Failed to read DMX rules from {rules_path}: {e}")
+                
+        if nodes:
+            logger.info(f"Indexing {len(nodes)} rule paragraphs into 'dmx_rules'...")
+            vector_store = QdrantVectorStore(client=client, collection_name="dmx_rules", path=None)
+            storage_context = StorageContext.from_defaults(vector_store=vector_store)
+            VectorStoreIndex(nodes, storage_context=storage_context, embed_model=FPTEmbedding())
+            logger.info("DMX rules indexing complete.")
 
 def search_products(query: str, limit: int = 3) -> list[dict[str, Any]]:
     """Retrieve semantically matching products from the Qdrant catalog."""
     try:
+        query = correct_text(query)
         index = get_vector_store_index("catalog_products")
         retriever = index.as_retriever(similarity_top_k=limit)
         nodes = retriever.retrieve(query)
@@ -215,6 +250,7 @@ def search_products(query: str, limit: int = 3) -> list[dict[str, Any]]:
 def search_few_shots(query: str, limit: int = 3) -> list[dict[str, Any]]:
     """Retrieve similar past dialogue turns for few-shot prompting."""
     try:
+        query = correct_text(query)
         index = get_vector_store_index("few_shot_chats")
         retriever = index.as_retriever(similarity_top_k=limit)
         nodes = retriever.retrieve(query)
@@ -231,4 +267,16 @@ def search_few_shots(query: str, limit: int = 3) -> list[dict[str, Any]]:
         return results
     except Exception as e:
         logger.error(f"Few-shot retrieval failed: {e}")
+        return []
+
+def search_rules(query: str, limit: int = 2) -> list[str]:
+    """Retrieve semantically matching DMX rules from Qdrant."""
+    try:
+        query = correct_text(query)
+        index = get_vector_store_index("dmx_rules")
+        retriever = index.as_retriever(similarity_top_k=limit)
+        nodes = retriever.retrieve(query)
+        return [node.node.text for node in nodes]
+    except Exception as e:
+        logger.error(f"Rules retrieval failed: {e}")
         return []
