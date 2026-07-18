@@ -98,6 +98,35 @@ const MOCK_CATALOG = {
       screen: '14 inch viền mỏng',
       stock: 22,
     }
+  ],
+  phone: [
+    {
+      id: 'phone-iphone-01',
+      name: 'iPhone 15 Pro Max 256GB',
+      price: 29490000,
+      brand: 'Apple',
+      battery: '4441 mAh (pin siêu trâu)',
+      performance: 'Apple A17 Pro mạnh mẽ',
+      stock: 5,
+    },
+    {
+      id: 'phone-samsung-02',
+      name: 'Samsung Galaxy S24 Ultra 256GB',
+      price: 26990000,
+      brand: 'Samsung',
+      battery: '5000 mAh (pin siêu trâu)',
+      performance: 'Snapdragon 8 Gen 3',
+      stock: 8,
+    },
+    {
+      id: 'phone-xiaomi-03',
+      name: 'Xiaomi Redmi Note 13 Pro 128GB',
+      price: 5990000,
+      brand: 'Xiaomi',
+      battery: '5000 mAh',
+      performance: 'Mediatek Helios G99-Ultra',
+      stock: 15,
+    }
   ]
 };
 
@@ -119,13 +148,15 @@ const MOCK_FAQ = {
 // Cấu trúc quản lý trạng thái ứng dụng nâng cao (Slot-Filling State)
 let sessionState = {
   stage: 'INIT', // INIT -> PROBING -> RECOMMENDATION
-  category: null, // ac, fridge, laptop
+  category: null, // ac, fridge, laptop, phone
   collectedData: {
     brand: null,
     budget: null, // { modifier: 'dưới'|'trên'|'tầm', value: số }
     roomSize: null, // số m2
     familySize: null, // số thành viên
-    purpose: null // học tập, gaming...
+    purpose: null, // học tập, gaming...
+    inverter: null,
+    priority: null // mức ưu tiên đặc tính (êm/di động/pin/thương hiệu)
   },
 };
 
@@ -377,7 +408,7 @@ function restoreSessionMessages(session) {
       </div>`;
     sessionState.stage = 'INIT';
     sessionState.category = null;
-    sessionState.collectedData = { brand: null, budget: null, roomSize: null, familySize: null, purpose: null };
+    sessionState.collectedData = { brand: null, budget: null, roomSize: null, familySize: null, purpose: null, inverter: null, priority: null };
 
     document.getElementById('active-category').textContent = 'Chưa xác định';
     document.getElementById('chat-stage').textContent = 'INIT';
@@ -417,10 +448,12 @@ function extractEntitiesFromText(text) {
     result.category = 'fridge';
   } else if (lower.includes('laptop') || lower.includes('máy tính')) {
     result.category = 'laptop';
+  } else if (lower.includes('điện thoại') || lower.includes('đt') || lower.includes('iphone') || lower.includes('smartphone')) {
+    result.category = 'phone';
   }
 
   // 2. Trích xuất Hãng sản xuất (Brand)
-  const brandsList = ['panasonic', 'daikin', 'casper', 'samsung', 'lg', 'aqua', 'hp', 'asus', 'lenovo'];
+  const brandsList = ['panasonic', 'daikin', 'casper', 'samsung', 'lg', 'aqua', 'hp', 'asus', 'lenovo', 'apple', 'xiaomi', 'oppo'];
   for (const b of brandsList) {
     if (lower.includes(b)) {
       result.brand = b.charAt(0).toUpperCase() + b.slice(1);
@@ -458,14 +491,374 @@ function extractEntitiesFromText(text) {
     result.familySize = 1;
   }
 
-  // 6. Trích xuất nhu cầu laptop (Purpose)
+  // 6. Trích xuất nhu cầu laptop / phone (Purpose)
   if (lower.includes('sinh viên') || lower.includes('học tập') || lower.includes('văn phòng') || lower.includes('mỏng nhẹ')) {
     result.purpose = 'office';
   } else if (lower.includes('gaming') || lower.includes('đồ họa') || lower.includes('chơi game')) {
     result.purpose = 'heavy';
+  } else if (lower.includes('pin trâu') || lower.includes('pin khoẻ') || lower.includes('pin khủng')) {
+    result.purpose = 'battery';
+  } else if (lower.includes('chụp ảnh') || lower.includes('quay phim') || lower.includes('camera')) {
+    result.purpose = 'camera';
+  }
+
+  // 7. Trích xuất yêu cầu inverter
+  if (lower.includes('inverter') || lower.includes('tiết kiệm điện')) {
+    result.inverter = true;
+  } else if (lower.includes('không inverter') || lower.includes('thông thường')) {
+    result.inverter = false;
   }
 
   return result;
+}
+
+// ========================================================
+// HỎI NGƯỢC (REVERSE QUESTIONS) - CÂU HỎI + LỰA CHỌN NHANH KIỂU CLAUDE
+// Thấp / Trung bình / Cao lấy mốc từ 2 file định biên của Điện Máy Xanh:
+//   - Giá: tứ phân vị Q1/Q2/Q3 (Moc_Phan_Khuc_119_Category.xlsx)
+//   - Không gian & mục đích: phân loại theo phòng (DMX_phan_loai_san_pham_theo_phong.xlsx)
+// ========================================================
+
+// Mốc phân khúc giá (VND) theo tứ phân vị 25% / 50% / 75% của từng ngành hàng.
+const PRICE_SEGMENTS = {
+  ac: { q25: 10990000, q50: 15040000, q75: 25340000 },     // Máy lạnh
+  fridge: { q25: 11260000, q50: 17190000, q75: 26040000 }, // Tủ lạnh
+  laptop: { q25: 24690000, q50: 30490000, q75: 39990000 }, // Laptop
+  phone: { q25: 4690000, q50: 8990000, q75: 18610000 },    // Điện thoại
+};
+
+function trVal(v) {
+  const n = Math.round(v / 100000) / 10; // làm tròn 1 chữ số thập phân
+  const s = (Number.isInteger(n) ? n.toString() : n.toFixed(1)).replace('.', ',');
+  return s + ' triệu';
+}
+
+// Sinh 3 lựa chọn giá Thấp / Trung bình / Cao + Tuỳ chọn từ mốc tứ phân vị.
+function budgetOptions(cat) {
+  const s = PRICE_SEGMENTS[cat];
+  return {
+    key: 'budget',
+    prompt: 'Anh/chị dự kiến <strong>ngân sách</strong> khoảng bao nhiêu ạ? (mốc giá tham khảo theo phân khúc thực tế của ngành hàng)',
+    options: [
+      { label: 'Thấp', sub: `Phổ thông · dưới ${trVal(s.q25)}`, set: { budget: { modifier: 'dưới', value: s.q25 } } },
+      { label: 'Trung bình', sub: `Tầm trung · ${trVal(s.q25)} – ${trVal(s.q50)}`, set: { budget: { modifier: 'tầm', value: s.q50 } } },
+      { label: 'Cao', sub: `Cao cấp · trên ${trVal(s.q75)}`, set: { budget: { modifier: 'trên', value: s.q75 } } },
+      { label: 'Tuỳ chọn', sub: 'Tự nhập mức giá của mình', custom: true },
+    ],
+  };
+}
+
+// Bộ câu hỏi ngược cho từng ngành hàng: đúng 4 câu, mỗi câu 3 lựa chọn + Tuỳ chọn.
+const QUESTION_SETS = {
+  ac: () => [
+    budgetOptions('ac'),
+    {
+      key: 'roomSize',
+      prompt: 'Máy lạnh sẽ lắp cho <strong>không gian</strong> nào ạ? (phạm vi làm lạnh hiệu quả theo diện tích phòng)',
+      options: [
+        { label: 'Thấp', sub: 'Phòng nhỏ · 6 – 15 m²', set: { roomSize: 12 } },
+        { label: 'Trung bình', sub: 'Phòng ngủ / studio · 15 – 25 m²', set: { roomSize: 20 } },
+        { label: 'Cao', sub: 'Phòng khách / không gian mở · trên 25 m²', set: { roomSize: 30 } },
+        { label: 'Tuỳ chọn', sub: 'Nhập số m² cụ thể', custom: true },
+      ],
+    },
+    {
+      key: 'inverter',
+      prompt: 'Mức <strong>ưu tiên tiết kiệm điện</strong> (công nghệ Inverter) của mình thế nào ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Dùng ít, ưu tiên giá rẻ', set: { inverter: false } },
+        { label: 'Trung bình', sub: 'Cân bằng điện năng & giá', set: { inverter: true } },
+        { label: 'Cao', sub: 'Chạy liên tục, tiết kiệm tối đa', set: { inverter: true } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả nhu cầu của mình', custom: true },
+      ],
+    },
+    {
+      key: 'priority',
+      prompt: 'Mức <strong>ưu tiên vận hành êm ái</strong> (độ ồn thấp) ra sao ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Không quá quan trọng', set: { priority: 'quiet_low' } },
+        { label: 'Trung bình', sub: 'Yên tĩnh vừa phải', set: { priority: 'quiet_mid' } },
+        { label: 'Cao', sub: 'Cần siêu êm (phòng ngủ)', set: { priority: 'quiet_high' } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả nhu cầu của mình', custom: true },
+      ],
+    },
+  ],
+  fridge: () => [
+    budgetOptions('fridge'),
+    {
+      key: 'familySize',
+      prompt: 'Nhà mình có khoảng <strong>bao nhiêu thành viên</strong> dùng chung tủ lạnh ạ? (để chọn dung tích lít phù hợp)',
+      options: [
+        { label: 'Thấp', sub: 'Độc thân / 1 – 2 người', set: { familySize: 2 } },
+        { label: 'Trung bình', sub: 'Gia đình 3 – 4 người', set: { familySize: 4 } },
+        { label: 'Cao', sub: 'Đại gia đình · 5 người trở lên', set: { familySize: 6 } },
+        { label: 'Tuỳ chọn', sub: 'Nhập số người cụ thể', custom: true },
+      ],
+    },
+    {
+      key: 'purpose',
+      prompt: 'Không gian đặt tủ lạnh của mình là <strong>khu bếp</strong> dạng nào ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Bếp kín nhỏ gọn', set: { purpose: 'kitchen_closed' } },
+        { label: 'Trung bình', sub: 'Bếp + phòng ăn', set: { purpose: 'kitchen_dining' } },
+        { label: 'Cao', sub: 'Bếp mở nối phòng khách', set: { purpose: 'kitchen_open' } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả không gian của mình', custom: true },
+      ],
+    },
+    {
+      key: 'inverter',
+      prompt: 'Mức <strong>ưu tiên tiết kiệm điện</strong> (Inverter) của mình thế nào ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Ưu tiên giá rẻ', set: { inverter: false } },
+        { label: 'Trung bình', sub: 'Cân bằng', set: { inverter: true } },
+        { label: 'Cao', sub: 'Tiết kiệm điện tối đa', set: { inverter: true } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả nhu cầu của mình', custom: true },
+      ],
+    },
+  ],
+  laptop: () => [
+    budgetOptions('laptop'),
+    {
+      key: 'purpose',
+      prompt: 'Anh/chị dùng laptop cho <strong>nhu cầu hiệu năng</strong> nào là chính ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Học tập – văn phòng cơ bản', set: { purpose: 'office' } },
+        { label: 'Trung bình', sub: 'Đa nhiệm, đồ họa nhẹ', set: { purpose: 'office' } },
+        { label: 'Cao', sub: 'Gaming – đồ họa nặng', set: { purpose: 'heavy' } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả nhu cầu của mình', custom: true },
+      ],
+    },
+    {
+      key: 'priority',
+      prompt: 'Mức <strong>ưu tiên mỏng nhẹ – di động</strong> của mình ra sao ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Đặt cố định, không cần nhẹ', set: { priority: 'portable_low' } },
+        { label: 'Trung bình', sub: 'Mang đi thỉnh thoảng', set: { priority: 'portable_mid' } },
+        { label: 'Cao', sub: 'Di chuyển nhiều, cần siêu nhẹ', set: { priority: 'portable_high' } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả nhu cầu của mình', custom: true },
+      ],
+    },
+    {
+      key: 'inverter',
+      prompt: 'Mức <strong>ưu tiên thời lượng pin</strong> khi dùng di động ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Chủ yếu cắm sạc', set: { inverter: false } },
+        { label: 'Trung bình', sub: 'Pin đủ dùng nửa ngày', set: { inverter: true } },
+        { label: 'Cao', sub: 'Cần pin trâu cả ngày', set: { inverter: true } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả nhu cầu của mình', custom: true },
+      ],
+    },
+  ],
+  phone: () => [
+    budgetOptions('phone'),
+    {
+      key: 'purpose',
+      prompt: 'Anh/chị mua điện thoại phục vụ <strong>nhu cầu chính</strong> nào ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Cơ bản, nghe gọi – pin trâu', set: { purpose: 'battery' } },
+        { label: 'Trung bình', sub: 'Chụp ảnh, giải trí', set: { purpose: 'camera' } },
+        { label: 'Cao', sub: 'Chơi game, hiệu năng cao', set: { purpose: 'heavy' } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả nhu cầu của mình', custom: true },
+      ],
+    },
+    {
+      key: 'inverter',
+      prompt: 'Mức <strong>ưu tiên dung lượng pin</strong> của mình thế nào ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Dùng nhẹ, sạc trong ngày', set: { inverter: false } },
+        { label: 'Trung bình', sub: 'Pin ổn định cả ngày', set: { inverter: true } },
+        { label: 'Cao', sub: 'Pin siêu trâu 5000 mAh+', set: { inverter: true } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả nhu cầu của mình', custom: true },
+      ],
+    },
+    {
+      key: 'priority',
+      prompt: 'Mức <strong>ưu tiên thương hiệu cao cấp</strong> ra sao ạ?',
+      options: [
+        { label: 'Thấp', sub: 'Miễn hợp túi tiền', set: { priority: 'brand_low' } },
+        { label: 'Trung bình', sub: 'Thương hiệu phổ biến, uy tín', set: { priority: 'brand_mid' } },
+        { label: 'Cao', sub: 'Ưu tiên flagship cao cấp', set: { priority: 'brand_high' } },
+        { label: 'Tuỳ chọn', sub: 'Mô tả nhu cầu của mình', custom: true },
+      ],
+    },
+  ],
+};
+
+// Câu hỏi ngược đầu tiên: xác định ngành hàng (khi chưa nhận diện được).
+const CATEGORY_QUESTION = {
+  key: 'category',
+  prompt: 'Dạ, anh/chị đang có nhu cầu tìm mua <strong>nhóm sản phẩm</strong> nào ạ?',
+  options: [
+    { label: 'Máy lạnh', sub: 'Điều hòa nhiệt độ', set: { category: 'ac' } },
+    { label: 'Tủ lạnh', sub: 'Bảo quản thực phẩm', set: { category: 'fridge' } },
+    { label: 'Laptop', sub: 'Máy tính xách tay', set: { category: 'laptop' } },
+    { label: 'Điện thoại', sub: 'Smartphone', set: { category: 'phone' } },
+  ],
+};
+
+// Slot đã có giá trị hay chưa (inverter dùng null làm "chưa hỏi").
+function slotAnswered(key) {
+  const d = sessionState.collectedData;
+  if (key === 'category') return !!sessionState.category;
+  if (key === 'inverter') return d.inverter !== null && d.inverter !== undefined;
+  return d[key] !== null && d[key] !== undefined;
+}
+
+// Đang chờ người dùng tự nhập cho câu hỏi nào (khi bấm "Tuỳ chọn").
+let pendingCustomKey = null;
+
+// Render 1 câu hỏi ngược kèm danh sách lựa chọn kiểu Claude (số thứ tự + mô tả).
+function renderFollowupQuestion(q) {
+  currentFollowup = q;
+  const rows = q.options.map((opt, idx) => {
+    const isCustom = opt.custom ? 'followup-custom' : '';
+    return `
+      <button type="button" onclick="selectFollowupOption(${idx})"
+        class="followup-option ${isCustom} group w-full flex items-center gap-3 text-left px-3.5 py-2.5 rounded-xl border border-slate-200 dark:border-brand-border/60 bg-white/70 dark:bg-brand-dark/30 hover:border-brand-electric hover:bg-brand-electric/5 transition-all">
+        <span class="shrink-0 w-6 h-6 rounded-lg bg-slate-100 dark:bg-brand-panel text-slate-500 dark:text-slate-300 group-hover:bg-brand-electric group-hover:text-white text-[11px] font-bold flex items-center justify-center transition-colors">
+          ${opt.custom ? '<i class="fa-solid fa-pen text-[9px]"></i>' : idx + 1}
+        </span>
+        <span class="flex flex-col min-w-0">
+          <span class="text-[13px] font-semibold text-slate-800 dark:text-slate-100 leading-tight">${opt.label}</span>
+          <span class="text-[11px] text-slate-500 dark:text-slate-400 leading-tight mt-0.5">${opt.sub}</span>
+        </span>
+      </button>`;
+  }).join('');
+
+  const html = `
+    <p class="text-[13.5px] leading-relaxed text-slate-800 dark:text-slate-200 mb-3">${q.prompt}</p>
+    <div class="space-y-2">${rows}</div>`;
+  appendAssistantMessage(html);
+}
+
+let currentFollowup = null;
+
+// Tìm câu hỏi ngược kế tiếp còn thiếu; render nó. Trả về false nếu đã đủ 4 slot.
+function askNextFollowup() {
+  if (!sessionState.category) {
+    renderFollowupQuestion(CATEGORY_QUESTION);
+    return true;
+  }
+  const qs = (QUESTION_SETS[sessionState.category] || (() => []))();
+  for (const q of qs) {
+    if (!slotAnswered(q.key)) {
+      renderFollowupQuestion(q);
+      return true;
+    }
+  }
+  return false;
+}
+
+// Người dùng bấm 1 lựa chọn hỏi ngược.
+window.selectFollowupOption = function (idx) {
+  if (!currentFollowup) return;
+  const opt = currentFollowup.options[idx];
+  if (!opt) return;
+
+  if (opt.custom) {
+    pendingCustomKey = currentFollowup.key;
+    const input = document.getElementById('user-input');
+    if (input) {
+      input.placeholder = 'Nhập lựa chọn của bạn cho câu hỏi trên...';
+      input.focus();
+    }
+    appendAssistantMessage('<p class="text-xs italic text-slate-400"><i class="fa-solid fa-keyboard mr-1"></i> Dạ anh/chị nhập giúp em thông tin cụ thể ở ô chat bên dưới nhé.</p>');
+    return;
+  }
+
+  appendUserMessage(`${opt.label} <span class="opacity-70">— ${opt.sub}</span>`);
+
+  // Áp giá trị lựa chọn vào state.
+  if (opt.set.category) sessionState.category = opt.set.category;
+  const d = sessionState.collectedData;
+  if (opt.set.budget !== undefined) d.budget = opt.set.budget;
+  if (opt.set.roomSize !== undefined) d.roomSize = opt.set.roomSize;
+  if (opt.set.familySize !== undefined) d.familySize = opt.set.familySize;
+  if (opt.set.purpose !== undefined) d.purpose = opt.set.purpose;
+  if (opt.set.inverter !== undefined) d.inverter = opt.set.inverter;
+  if (opt.set.priority !== undefined) d.priority = opt.set.priority;
+
+  syncDebugPanel();
+
+  showTypingIndicator();
+  setTimeout(() => {
+    removeTypingIndicator();
+    if (!askNextFollowup()) runRecommendation();
+  }, 450);
+};
+
+function syncDebugPanel() {
+  const cat = document.getElementById('active-category');
+  if (cat) cat.textContent = sessionState.category || 'Chưa xác định';
+  const slang = document.getElementById('slang-inspector');
+  if (slang) slang.textContent = JSON.stringify(sessionState.collectedData);
+}
+
+// ========================================================
+// BACKEND WIRING - POST /api/chat (docs/wiring.md contract)
+// ========================================================
+// Off by default: keeps the existing mock demo behavior unchanged unless explicitly
+// opted in (window.USE_REAL_API = true, e.g. from the browser console or a future
+// settings toggle). Server is stateless per docs/wiring.md — client resends the
+// previous turn's `profile` so slots (hỏi ngược) carry forward across turns.
+const USE_REAL_API = !!window.USE_REAL_API;
+let backendProfile = null;
+
+function formatBackendPrice(v) {
+  if (v === null || v === undefined) return null;
+  return (v / 1_000_000).toFixed(1) + ' triệu';
+}
+
+// Renders one grounded product item from the real API response. Only fields the
+// backend actually returned are shown — never invents data the engine didn't send.
+function renderBackendItemCard(item) {
+  const price = formatBackendPrice(item.price);
+  const reasons = (item.reasons || []).map(r => `<li>${r}</li>`).join('');
+  const link = item.url
+    ? `<a href="${item.url}" target="_blank" rel="noopener" class="text-brand-electric text-xs font-semibold hover:underline">Xem tại dienmayxanh.com <i class="fa-solid fa-arrow-up-right-from-square text-[10px]"></i></a>`
+    : '';
+  return `
+    <div class="rounded-xl border border-slate-200 dark:border-brand-border/60 p-3.5 space-y-1.5 bg-white/60 dark:bg-brand-dark/20">
+      <p class="text-sm font-bold text-slate-800 dark:text-slate-100">${item.name || item.brand || item.product_id}</p>
+      <div class="flex items-center gap-2 text-xs text-slate-500 dark:text-slate-400">
+        ${item.brand ? `<span>${item.brand}</span>` : ''}
+        ${price ? `<span class="font-semibold text-brand-electric">${price}</span>` : ''}
+        ${item.rating ? `<span><i class="fa-solid fa-star text-amber-400"></i> ${item.rating}</span>` : ''}
+      </div>
+      ${reasons ? `<ul class="text-xs text-slate-500 dark:text-slate-400 list-disc list-inside space-y-0.5">${reasons}</ul>` : ''}
+      ${link}
+    </div>`;
+}
+
+// Handles the full response shape from docs/wiring.md (need_info / recommendation /
+// comparison / fit / compatibility / upgrade / teach / whatif). Renders the grounded
+// message + items the same way regardless of which capability answered.
+function renderBackendResponse(data) {
+  if (data.profile !== undefined) backendProfile = data.profile;
+
+  let html = `<p class="text-sm leading-relaxed">${data.message || ''}</p>`;
+  if (Array.isArray(data.items) && data.items.length) {
+    html += `<div class="grid grid-cols-1 gap-2.5 mt-3">${data.items.map(renderBackendItemCard).join('')}</div>`;
+  }
+  if (data.explanation) {
+    html += `<p class="text-xs text-slate-500 dark:text-slate-400 mt-2 italic">${data.explanation}</p>`;
+  }
+  appendAssistantMessage(html);
+}
+
+async function sendToBackendAPI(text) {
+  try {
+    const res = await fetch('/api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query: text, profile: backendProfile, selected_products: [] }),
+    });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    const data = await res.json();
+    renderBackendResponse(data);
+  } catch (err) {
+    appendAssistantMessage(`<p class="text-sm text-red-500"><i class="fa-solid fa-triangle-exclamation mr-1"></i> Không kết nối được máy chủ tư vấn (${err.message}). Vui lòng thử lại.</p>`);
+  }
 }
 
 // ========================================================
@@ -483,6 +876,11 @@ function handleFormSubmit(event) {
   appendUserMessage(val);
   input.value = '';
   showTypingIndicator();
+
+  if (USE_REAL_API) {
+    sendToBackendAPI(val).finally(removeTypingIndicator);
+    return;
+  }
 
   setTimeout(() => {
     removeTypingIndicator();
@@ -515,17 +913,23 @@ function dispatchLogicEngine(text) {
   if (extracted.roomSize) sessionState.collectedData.roomSize = extracted.roomSize;
   if (extracted.familySize) sessionState.collectedData.familySize = extracted.familySize;
   if (extracted.purpose) sessionState.collectedData.purpose = extracted.purpose;
+  if (extracted.inverter !== undefined) sessionState.collectedData.inverter = extracted.inverter;
 
   // Cập nhật giao diện gỡ lỗi (Hộp đen ẩn) trực quan theo DOM
   document.getElementById('active-category').textContent = sessionState.category || 'Chưa xác định';
   document.getElementById('slang-inspector').textContent = JSON.stringify(sessionState.collectedData);
 
-  // BƯỚC 3: KIỂM TRA TÍNH XÁC ĐỊNH NGÀNH HÀNG (CATEGORY PROBING)
+  // Nếu đang chờ người dùng tự nhập cho 1 câu hỏi ngược ("Tuỳ chọn") -> reset con trỏ chờ.
+  const inputEl0 = document.getElementById('user-input');
+  if (inputEl0) inputEl0.placeholder = "Nhập câu hỏi bằng tiếng Việt...";
+  pendingCustomKey = null;
+
+  // BƯỚC 3: HỎI NGƯỢC (REVERSE QUESTIONS) - xác định ngành hàng + 4 câu hỏi kèm lựa chọn nhanh.
   if (!sessionState.category) {
-    sessionState.stage = 'INIT';
+    sessionState.stage = 'PROBING_CATEGORY';
     document.getElementById('chat-stage').textContent = sessionState.stage;
     document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
-    appendAssistantMessage('<p class="text-sm">Dạ, em có thể hỗ trợ tư vấn chuyên sâu và so sánh thông thái về 3 nhóm sản phẩm: <strong>Máy lạnh, Tủ lạnh, hoặc Laptop</strong>. Anh/chị đang có nhu cầu tìm mua sản phẩm nào ạ?</p>');
+    askNextFollowup();
     return;
   }
 
@@ -534,48 +938,148 @@ function dispatchLogicEngine(text) {
   if (sessionState.category === 'ac') categoryLabel = "Tư vấn Máy Lạnh";
   if (sessionState.category === 'fridge') categoryLabel = "Tư vấn Tủ Lạnh";
   if (sessionState.category === 'laptop') categoryLabel = "Tư vấn Laptop";
+  if (sessionState.category === 'phone') categoryLabel = "Tư vấn Điện thoại";
   updateActiveSessionTitle(categoryLabel, sessionState.category);
 
-  // BƯỚC 4: ĐIỀU TRA THÔNG TIN CÒN THIẾU DỰA TRÊN NGÀNH HÀNG (DYNAMIC SLOT PROBING)
+  // BƯỚC 4: HỎI NGƯỢC 4 CÂU (mỗi câu 3 lựa chọn Thấp/Trung bình/Cao + Tuỳ chọn).
+  // Slot nào người dùng đã tự nhập ở BƯỚC 2 sẽ tự bỏ qua, chỉ hỏi phần còn thiếu.
+  sessionState.stage = 'PROBING';
+  document.getElementById('chat-stage').textContent = sessionState.stage;
+  document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+  if (askNextFollowup()) return;
 
-  // A. Nếu là Máy Lạnh mà chưa biết không gian / diện tích lắp đặt
-  if (sessionState.category === 'ac' && !sessionState.collectedData.roomSize) {
-    if (sessionState.stage === 'PROBING') {
-      // Người dùng đã được hỏi câu này ở lượt trước nhưng nhập text tự do không có số m2 cụ thể -> Áp dụng Default Fallback thông minh
-      sessionState.collectedData.roomSize = 12;
-      appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép lấy mức diện tích phòng ngủ tiêu chuẩn phổ thông (dưới 15m²) để lọc sản phẩm ngay cho mình nhé.</p>');
-    } else {
-      sessionState.stage = 'PROBING';
-      document.getElementById('chat-stage').textContent = sessionState.stage;
-      document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
-      appendAssistantMessage('<p class="text-sm">Dạ, để em tính toán công suất số Ngựa (HP) tối ưu nhất, anh/chị cho em hỏi <strong>diện tích phòng lắp đặt khoảng bao nhiêu m²</strong> (hoặc lắp cho không gian nào như phòng ngủ, phòng khách) ạ?</p>');
-      return;
+  // BƯỚC 5: đã đủ thông tin -> chạy engine gợi ý.
+  runRecommendation();
+}
+
+function runRecommendation() {
+  const startTime = performance.now();
+
+  if (sessionState.category === 'ac') {
+    // 1. Diện tích phòng
+    if (!sessionState.collectedData.roomSize) {
+      if (sessionState.stage === 'PROBING_ROOM') {
+        sessionState.collectedData.roomSize = 12; // fallback
+        appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép lấy mức diện tích phòng ngủ tiêu chuẩn phổ thông (dưới 15m²) để tiếp tục nhé.</p>');
+      } else {
+        sessionState.stage = 'PROBING_ROOM';
+        document.getElementById('chat-stage').textContent = sessionState.stage;
+        document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+        appendAssistantMessage('<p class="text-sm">Dạ, để em tính toán công suất số Ngựa (HP) tối ưu nhất, anh/chị cho em hỏi <strong>diện tích phòng lắp đặt khoảng bao nhiêu m²</strong> (hoặc lắp cho phòng ngủ, phòng khách) ạ?</p>');
+        return;
+      }
     }
-  }
-
-  // B. Nếu là Tủ Lạnh mà chưa biết nhu cầu thành viên sử dụng
-  if (sessionState.category === 'fridge' && !sessionState.collectedData.familySize) {
-    if (sessionState.stage === 'PROBING') {
-      // Fallback khi người dùng nhập dữ liệu text tự do không chứa số lượng
-      sessionState.collectedData.familySize = 3;
-      appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép lấy dung tích tiêu chuẩn cho hộ gia đình 3 - 4 thành viên phổ biến để đề xuất các mẫu tối ưu nhé.</p>');
-    } else {
-      sessionState.stage = 'PROBING';
-      document.getElementById('chat-stage').textContent = sessionState.stage;
-      document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
-      appendAssistantMessage('<p class="text-sm">Dạ, nhà mình dự kiến **có khoảng bao nhiêu thành viên** sẽ dùng chung tủ lạnh ạ, để em lọc mức dung tích (lít) chứa thực phẩm vừa vặn nhất cho gia đình mình?</p>');
-      return;
+    
+    // 2. Ngân sách tối đa
+    if (!sessionState.collectedData.budget) {
+      if (sessionState.stage === 'PROBING_BUDGET') {
+        sessionState.collectedData.budget = { modifier: 'tầm', value: 12000000 }; // fallback
+        appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép chọn phân khúc giá phổ thông khoảng 12 triệu để gợi ý cho mình nhé.</p>');
+      } else {
+        sessionState.stage = 'PROBING_BUDGET';
+        document.getElementById('chat-stage').textContent = sessionState.stage;
+        document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+        appendAssistantMessage('<p class="text-sm">Dạ anh/chị dự kiến đầu tư khoảng **ngân sách tối đa bao nhiêu** cho máy lạnh này để em lọc các mẫu vừa vặn túi tiền nhất ạ?</p>');
+        return;
+      }
     }
-  }
 
-  // C. Nếu là Laptop mà chưa biết phân khúc giá hoặc hãng, hỏi thêm để tăng tính gợi mở
-  if (sessionState.category === 'laptop' && !sessionState.collectedData.brand && !sessionState.collectedData.budget) {
-    if (sessionState.stage !== 'PROBING') {
-      sessionState.stage = 'PROBING';
-      document.getElementById('chat-stage').textContent = sessionState.stage;
-      document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
-      appendAssistantMessage('<p class="text-sm">Dạ, anh/chị tìm mua laptop phục vụ chính cho **nhu cầu học tập văn phòng mỏng nhẹ** hay **đồ họa chơi game nặng** ạ? Nếu mình có khoảng ngân sách dự kiến, hãy chia sẻ để em định hình máy chuẩn nhất nha!</p>');
-      return;
+    // 3. Công nghệ Inverter
+    if (sessionState.collectedData.inverter === null) {
+      if (sessionState.stage === 'PROBING_INVERTER') {
+        sessionState.collectedData.inverter = true; // fallback
+        appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép mặc định chọn các mẫu có Inverter tiết kiệm điện tối ưu khi chạy lâu dài nhé.</p>');
+      } else {
+        sessionState.stage = 'PROBING_INVERTER';
+        document.getElementById('chat-stage').textContent = sessionState.stage;
+        document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+        appendAssistantMessage('<p class="text-sm">Dạ anh/chị có ưu tiên máy lạnh trang bị **công nghệ Inverter tiết kiệm điện** và vận hành siêu êm không ạ?</p>');
+        return;
+      }
+    }
+  } else if (sessionState.category === 'fridge') {
+    // 1. Số thành viên sử dụng
+    if (!sessionState.collectedData.familySize) {
+      if (sessionState.stage === 'PROBING_FAMILY') {
+        sessionState.collectedData.familySize = 3; // fallback
+        appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép lấy dung tích tiêu chuẩn cho hộ gia đình 3 - 4 thành viên phổ biến để đề xuất các mẫu tối ưu nhé.</p>');
+      } else {
+        sessionState.stage = 'PROBING_FAMILY';
+        document.getElementById('chat-stage').textContent = sessionState.stage;
+        document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+        appendAssistantMessage('<p class="text-sm">Dạ, nhà mình dự kiến **có khoảng bao nhiêu thành viên** sẽ dùng chung tủ lạnh ạ, để em lọc mức dung tích (lít) chứa thực phẩm vừa vặn nhất cho gia đình mình?</p>');
+        return;
+      }
+    }
+
+    // 2. Ngân sách
+    if (!sessionState.collectedData.budget) {
+      if (sessionState.stage === 'PROBING_BUDGET') {
+        sessionState.collectedData.budget = { modifier: 'tầm', value: 8000000 }; // fallback
+        appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép chọn phân khúc giá phổ thông khoảng 8 triệu để đề xuất cho mình nhé.</p>');
+      } else {
+        sessionState.stage = 'PROBING_BUDGET';
+        document.getElementById('chat-stage').textContent = sessionState.stage;
+        document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+        appendAssistantMessage('<p class="text-sm">Dạ, mình dự kiến **chi tiêu khoảng bao nhiêu** cho tủ lạnh này để em khoanh vùng các mẫu thích hợp nhất ạ?</p>');
+        return;
+      }
+    }
+  } else if (sessionState.category === 'laptop') {
+    // 1. Nhu cầu laptop
+    if (!sessionState.collectedData.purpose) {
+      if (sessionState.stage === 'PROBING_PURPOSE') {
+        sessionState.collectedData.purpose = 'office'; // fallback
+        appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép định hướng theo phân khúc học tập - văn phòng phổ thông để chọn máy cho mình nhé.</p>');
+      } else {
+        sessionState.stage = 'PROBING_PURPOSE';
+        document.getElementById('chat-stage').textContent = sessionState.stage;
+        document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+        appendAssistantMessage('<p class="text-sm">Dạ, anh/chị tìm mua laptop phục vụ chính cho **nhu cầu học tập văn phòng mỏng nhẹ** hay **đồ họa chơi game nặng** ạ?</p>');
+        return;
+      }
+    }
+
+    // 2. Ngân sách
+    if (!sessionState.collectedData.budget) {
+      if (sessionState.stage === 'PROBING_BUDGET') {
+        sessionState.collectedData.budget = { modifier: 'tầm', value: 15000000 }; // fallback
+        appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép lấy mức ngân sách tầm trung khoảng 15 triệu để lọc máy tốt nhất nha.</p>');
+      } else {
+        sessionState.stage = 'PROBING_BUDGET';
+        document.getElementById('chat-stage').textContent = sessionState.stage;
+        document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+        appendAssistantMessage('<p class="text-sm">Dạ ngân sách dự kiến của anh/chị tầm khoảng **bao nhiêu triệu** để em tìm mẫu tối ưu cấu hình nhất trong tầm giá ạ?</p>');
+        return;
+      }
+    }
+  } else if (sessionState.category === 'phone') {
+    // 1. Nhu cầu sử dụng
+    if (!sessionState.collectedData.purpose) {
+      if (sessionState.stage === 'PROBING_PURPOSE') {
+        sessionState.collectedData.purpose = 'battery'; // fallback
+        appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép chọn các dòng có dung lượng pin lớn để đáp ứng nhu cầu pin trâu cho mình nhé.</p>');
+      } else {
+        sessionState.stage = 'PROBING_PURPOSE';
+        document.getElementById('chat-stage').textContent = sessionState.stage;
+        document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+        appendAssistantMessage('<p class="text-sm">Dạ, anh/chị muốn mua điện thoại phục vụ **nhu cầu sử dụng gì là chủ yếu** ạ (ví dụ cần pin trâu, chơi game mượt, hay chụp ảnh đẹp)?</p>');
+        return;
+      }
+    }
+
+    // 2. Ngân sách
+    if (!sessionState.collectedData.budget) {
+      if (sessionState.stage === 'PROBING_BUDGET') {
+        sessionState.collectedData.budget = { modifier: 'tầm', value: 10000000 }; // fallback
+        appendAssistantMessage('<p class="text-xs italic text-slate-400 mb-2"><i class="fa-solid fa-wand-magic-sparkles mr-1"></i> Em xin phép lọc các sản phẩm trong phân khúc tầm trung khoảng 10 triệu để tư vấn nhé.</p>');
+      } else {
+        sessionState.stage = 'PROBING_BUDGET';
+        document.getElementById('chat-stage').textContent = sessionState.stage;
+        document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
+        appendAssistantMessage('<p class="text-sm">Dạ, mình dự kiến chi tiêu **tối đa khoảng bao nhiêu** cho chiếc điện thoại này ạ?</p>');
+        return;
+      }
     }
   }
 
@@ -627,6 +1131,34 @@ function dispatchLogicEngine(text) {
     }
   }
 
+  // Thực hiện lọc theo Inverter (Đối với Máy lạnh)
+  if (sessionState.category === 'ac' && sessionState.collectedData.inverter !== null) {
+    const inv = sessionState.collectedData.inverter;
+    filteredProducts = filteredProducts.filter(p => p.inverter === inv);
+  }
+
+  // Thực hiện lọc theo Nhu cầu sử dụng (Đối với Laptop)
+  if (sessionState.category === 'laptop' && sessionState.collectedData.purpose) {
+    const purpose = sessionState.collectedData.purpose;
+    if (purpose === 'office') {
+      filteredProducts = filteredProducts.filter(p => p.name.includes('Slim') || p.name.includes('Pavilion'));
+    } else if (purpose === 'heavy') {
+      filteredProducts = filteredProducts.filter(p => p.name.includes('OLED') || p.name.includes('Gaming') || p.name.includes('Pro'));
+    }
+  }
+
+  // Thực hiện lọc theo Nhu cầu sử dụng (Đối với Điện thoại)
+  if (sessionState.category === 'phone' && sessionState.collectedData.purpose) {
+    const purpose = sessionState.collectedData.purpose;
+    if (purpose === 'battery') {
+      filteredProducts = filteredProducts.filter(p => p.battery.includes('pin trâu') || p.battery.includes('pin siêu trâu') || p.battery.includes('5000 mAh'));
+    } else if (purpose === 'camera') {
+      filteredProducts = filteredProducts.filter(p => p.name.includes('Pro') || p.name.includes('Ultra'));
+    } else if (purpose === 'heavy') {
+      filteredProducts = filteredProducts.filter(p => p.performance.includes('mạnh mẽ') || p.performance.includes('Snapdragon 8'));
+    }
+  }
+
   // Nếu bộ lọc quá chặt dẫn đến không tìm thấy sản phẩm nào -> Fallback: Hiển thị toàn bộ danh mục kèm thông báo nới lỏng tiêu chí
   let isFallbackTriggered = false;
   if (filteredProducts.length === 0) {
@@ -673,6 +1205,9 @@ function dispatchLogicEngine(text) {
     } else if (sessionState.category === 'laptop') {
       specsHtml = `<li><i class="fa-solid fa-weight-hanging text-slate-400 mr-1.5"></i>Trọng lượng: <strong>${product.weight}</strong></li>
                    <li><i class="fa-solid fa-laptop text-slate-400 mr-1.5"></i>Màn hình: <strong>${product.screen}</strong></li>`;
+    } else if (sessionState.category === 'phone') {
+      specsHtml = `<li><i class="fa-solid fa-battery-three-quarters text-slate-400 mr-1.5"></i>Pin: <strong>${product.battery}</strong></li>
+                   <li><i class="fa-solid fa-microchip text-slate-400 mr-1.5"></i>Hiệu năng: <strong>${product.performance}</strong></li>`;
     }
 
     cardsHtml += `
@@ -709,7 +1244,7 @@ function dispatchLogicEngine(text) {
   // Khôi phục chu trình máy trạng thái về trạng thái khởi tạo ban đầu chuẩn bị cho phiên lọc tiếp theo
   sessionState.stage = 'INIT';
   sessionState.category = null;
-  sessionState.collectedData = { brand: null, budget: null, roomSize: null, familySize: null, purpose: null };
+  sessionState.collectedData = { brand: null, budget: null, roomSize: null, familySize: null, purpose: null, inverter: null, priority: null };
 
   document.getElementById('chat-stage').textContent = sessionState.stage;
   document.getElementById('latency-val').textContent = Math.round(performance.now() - startTime) + 'ms';
@@ -743,7 +1278,7 @@ window.resetConversation = function() {
 
   sessionState.stage = 'INIT';
   sessionState.category = null;
-  sessionState.collectedData = { brand: null, budget: null, roomSize: null, familySize: null, purpose: null };
+  sessionState.collectedData = { brand: null, budget: null, roomSize: null, familySize: null, purpose: null, inverter: null, priority: null };
 
   document.getElementById('active-category').textContent = 'Chưa xác định';
   document.getElementById('chat-stage').textContent = 'INIT';

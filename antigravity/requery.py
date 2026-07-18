@@ -50,8 +50,9 @@ def rewrite_inbound(text: str, *, timeout: float = 2.0) -> dict[str, Any]:
         {"role": "user", "content": text},
     ]
     try:
-        raw = fpt_client.chat_completion(
-            INBOUND_MODEL, messages, max_tokens=256, temperature=0.0, timeout=timeout,
+        from antigravity.model_hub import hub
+        raw = hub.call_agent(
+            "router", messages, model=INBOUND_MODEL, max_tokens=256, temperature=0.0, timeout=timeout,
             response_format={"type": "json_object"},
         )
         obj = json.loads(raw)
@@ -101,8 +102,9 @@ def naturalize_response(
         {"role": "user", "content": ctx},
     ]
     try:
-        text = fpt_client.chat_completion(
-            OUTBOUND_MODEL, messages, max_tokens=400, temperature=0.3, timeout=timeout,
+        from antigravity.model_hub import hub
+        text = hub.call_agent(
+            "explainer", messages, model=OUTBOUND_MODEL, max_tokens=400, temperature=0.3, timeout=timeout,
         )
     except fpt_client.FPTError:
         return fallback_message

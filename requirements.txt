@@ -11,6 +11,3 @@ dirtyjson
 qdrant-client
 llama-index-core
 llama-index-vector-stores-qdrant
-transformers
-torch
-sentencepiece

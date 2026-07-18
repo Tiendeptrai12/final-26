@@ -129,12 +129,11 @@ def explain_top(
         {"role": "system", "content": system_content},
         {"role": "user", "content": _facts_block(items, profile)},
     ]
-    # GLM reasoning models need thinking off to answer directly (see _GLM_NOTHINK).
-    extra_body = _GLM_NOTHINK if "glm" in model.lower() else None
     try:
-        text = fpt_client.chat_completion(
-            model, messages, max_tokens=max_tokens, temperature=0.3, timeout=timeout,
-            provider=provider, extra_body=extra_body,
+        from antigravity.model_hub import hub
+        text = hub.call_agent(
+            "explainer", messages, model=model, max_tokens=max_tokens, temperature=0.3, timeout=timeout,
+            provider=provider
         )
     except fpt_client.FPTError:
         return None

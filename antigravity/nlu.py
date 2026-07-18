@@ -276,8 +276,9 @@ def extract_need_profile(
     messages.append({"role": "user", "content": text})
 
     try:
-        raw = fpt_client.chat_completion(
-            model, messages, max_tokens=256, temperature=0.0, timeout=timeout,
+        from antigravity.model_hub import hub
+        raw = hub.call_agent(
+            "nlu", messages, model=model, max_tokens=256, temperature=0.0, timeout=timeout,
             response_format={"type": "json_object"},
         )
         obj = _parse_json(raw)

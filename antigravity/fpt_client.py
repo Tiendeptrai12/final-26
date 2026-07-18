@@ -115,6 +115,10 @@ def chat_completion(
         raise FPTError("FPT returned non-JSON body") from e
 
     try:
-        return body["choices"][0]["message"]["content"]
+        msg = body["choices"][0]["message"]
+        content = msg.get("content")
+        if content is None or (isinstance(content, str) and not content.strip()):
+            content = msg.get("reasoning_content")
+        return content or ""
     except (KeyError, IndexError, TypeError) as e:
         raise FPTError(f"unexpected FPT response shape: {body}") from e
