@@ -78,22 +78,22 @@ def test_parse_json_finds_embedded_object():
 
 # --- extract_need_profile (mocked) ------------------------------------------
 def test_extract_full(monkeypatch):
-    _mock_llm(monkeypatch, {"budget_max": 20000000, "area_m2": 18, "priority": "quiet"})
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "budget_max": 20000000, "area_m2": 18, "priority": "quiet"})
     p, missing, raw = nlu.extract_need_profile("máy lạnh dưới 20 triệu phòng 18m2 ít ồn")
     assert p.budget_max == 20000000 and p.area_m2 == 18.0 and p.priority == "quiet"
     assert missing == []
-    assert raw == {"budget_max": 20000000, "area_m2": 18, "priority": "quiet"}
+    assert raw == {"category": "Máy lạnh", "budget_max": 20000000, "area_m2": 18, "priority": "quiet"}
 
 
 def test_extract_code_switching(monkeypatch):
-    _mock_llm(monkeypatch, {"budget_max": 15000000, "area_m2": 22, "brands": ["Daikin"]})
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "budget_max": 15000000, "area_m2": 22, "brands": ["Daikin"]})
     p, missing, _ = nlu.extract_need_profile("need a quiet AC, budget 15tr, phòng 22m2")
     assert p.budget_max == 15000000 and p.area_m2 == 22.0 and p.brands == ["Daikin"]
     assert missing == []
 
 
 def test_extract_missing_slots(monkeypatch):
-    _mock_llm(monkeypatch, {"priority": "energy_saving"})  # no area, no budget
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "priority": "energy_saving"})  # no area/budget
     p, missing, _ = nlu.extract_need_profile("tư vấn máy lạnh tiết kiệm điện")
     assert set(missing) == {"area_m2", "budget_max"}
     assert p.priority == "energy_saving"
@@ -103,7 +103,7 @@ def test_extract_malformed_json_fallback(monkeypatch):
     _mock_llm(monkeypatch, "sorry I cannot help with that")
     p, missing, raw = nlu.extract_need_profile("hello")
     assert p == NeedProfile()
-    assert set(missing) == {"area_m2", "budget_max"}
+    assert set(missing) == {"category", "budget_max"}
     assert raw is None
 
 
@@ -113,7 +113,7 @@ def test_extract_llm_error_fallback(monkeypatch):
     monkeypatch.setattr(fpt_client, "chat_completion", boom)
     p, missing, raw = nlu.extract_need_profile("máy lạnh 20 triệu 18m2")
     assert p == NeedProfile() and raw is None
-    assert set(missing) == {"area_m2", "budget_max"}
+    assert set(missing) == {"category", "budget_max"}
 
 
 # --- follow-up templates ----------------------------------------------------
@@ -135,7 +135,7 @@ def _rec(pid, price, amin, amax, noise, cspf, brand="Daikin"):
 
 
 def test_advise_need_info(monkeypatch):
-    _mock_llm(monkeypatch, {"priority": "quiet"})
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "priority": "quiet"})
     out = nlu.advise("máy lạnh chạy êm")
     assert out["status"] == "need_info"
     assert set(out["missing"]) == {"area_m2", "budget_max"}
@@ -143,7 +143,7 @@ def test_advise_need_info(monkeypatch):
 
 
 def test_advise_ok_ranks(monkeypatch):
-    _mock_llm(monkeypatch, {"budget_max": 20000000, "area_m2": 18, "priority": "quiet"})
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "budget_max": 20000000, "area_m2": 18, "priority": "quiet"})
     records = [
         _rec("A", 10_000_000, 15, 20, 30, 6.2),
         _rec("B", 18_000_000, 15, 20, 42, 4.5),
@@ -158,7 +158,7 @@ def test_advise_ok_ranks(monkeypatch):
 
 # --- build_chat_response (API contract) -------------------------------------
 def test_chat_response_recommendation(monkeypatch):
-    _mock_llm(monkeypatch, {"budget_max": 20000000, "area_m2": 18, "priority": "quiet"})
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "budget_max": 20000000, "area_m2": 18, "priority": "quiet"})
     records = [
         _rec("A", 10_000_000, 15, 20, 30, 6.2),
         _rec("B", 18_000_000, 15, 20, 42, 4.5),
@@ -175,7 +175,7 @@ def test_chat_response_recommendation(monkeypatch):
 
 
 def test_chat_response_includes_explanation(monkeypatch):
-    _mock_llm(monkeypatch, {"budget_max": 20000000, "area_m2": 18, "priority": "quiet"})
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "budget_max": 20000000, "area_m2": 18, "priority": "quiet"})
     from antigravity import explainer
     monkeypatch.setattr(explainer, "explain_top",
                         lambda items, profile, **k: "Daikin êm hơn, LG tiết kiệm điện hơn.")
@@ -194,7 +194,7 @@ def test_chat_response_need_info(monkeypatch):
 
 
 def test_chat_response_no_results(monkeypatch):
-    _mock_llm(monkeypatch, {"budget_max": 1_000_000, "area_m2": 18})  # too cheap
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "budget_max": 1_000_000, "area_m2": 18})  # too cheap
     resp = nlu.build_chat_response("máy lạnh 1 triệu phòng 18m2",
                                    records=[_rec("A", 10_000_000, 15, 20, 30, 6.2)])
     assert resp["mode"] == "recommendation" and resp["items"] == []
@@ -226,11 +226,11 @@ def test_merge_profiles_new_wins_else_prior():
 def test_followup_answer_keeps_earlier_priority(monkeypatch):
     records = [_rec("A", 15_000_000, 15, 20, 22, 6.0)]
     # turn 1: only priority -> need_info
-    _mock_llm(monkeypatch, {"priority": "quiet"})
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "priority": "quiet"})
     r1 = nlu.build_chat_response("máy lạnh ít ồn", records=records, explain=False)
     assert r1["mode"] == "need_info" and r1["profile"]["priority"] == "quiet"
     # turn 2: area+budget, resend prior profile -> priority must persist
-    _mock_llm(monkeypatch, {"area_m2": 18, "budget_max": 20000000})
+    _mock_llm(monkeypatch, {"category": "Máy lạnh", "area_m2": 18, "budget_max": 20000000})
     r2 = nlu.build_chat_response("18m2, 20 triệu", records=records, explain=False,
                                  prior_profile=r1["profile"])
     assert r2["mode"] == "recommendation"

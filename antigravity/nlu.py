@@ -23,27 +23,40 @@ from antigravity.aircon_ranking import (
     PRIORITIES, ROOM_TYPES, NeedProfile, RankedItem, RankResult, rank_top,
 )
 
-# slots that gate a follow-up question when null (decided in Phase 3 planning)
-REQUIRED_SLOTS = ("area_m2", "budget_max")
-
+# required slots are category-aware (see missing_slots): every ngành cần category + budget;
+# máy lạnh cần thêm diện tích. Phase 3 chỉ có aircon; giờ đa ngành.
 FOLLOWUP_QUESTIONS = {
+    "category": "Bạn muốn mua sản phẩm gì ạ (máy lạnh, tủ lạnh, điện thoại, laptop...)?",
     "area_m2": "Phòng bạn định lắp khoảng bao nhiêu m²?",
     "budget_max": "Ngân sách của bạn khoảng bao nhiêu (ví dụ 15 triệu)?",
     "priority": "Bạn ưu tiên điều gì nhất: chạy êm, làm lạnh nhanh, tiết kiệm điện, hay giá rẻ?",
 }
 
+# DMX categories the advisor understands (map free text -> canonical category_name)
+KNOWN_CATEGORIES = (
+    "Máy lạnh", "Tủ lạnh", "Máy giặt", "Tivi", "Điện thoại", "Laptop", "Máy tính bảng",
+    "Nồi cơm điện", "Lò vi sóng", "Quạt các loại", "Máy lọc nước", "Máy nước nóng",
+    "Máy hút bụi gia đình", "Bếp điện", "Đồng hồ thông minh", "Loa, Tai nghe",
+)
+
 _SYSTEM_PROMPT = (
-    "Bạn là bộ trích xuất nhu cầu mua máy lạnh. Đọc tin nhắn tiếng Việt của khách và trả về "
-    "DUY NHẤT một object JSON, không giải thích, không markdown. Các khóa:\n"
+    "Bạn là bộ trích xuất nhu cầu mua ĐIỆN MÁY (mọi ngành hàng, không chỉ máy lạnh). Đọc "
+    "tin nhắn tiếng Việt của khách và trả về DUY NHẤT một object JSON, không giải thích, "
+    "không markdown. Các khóa:\n"
+    '  "category": tên ngành hàng hoặc null. Chọn đúng 1 trong: '
+    + " | ".join(KNOWN_CATEGORIES) + " (vd 'máy lạnh'->\"Máy lạnh\", 'điện thoại/dt'->"
+    '"Điện thoại", \'tủ lạnh\'->"Tủ lạnh", \'laptop\'->"Laptop"). Không rõ -> null.\n'
     '  "budget_max": số nguyên VND hoặc null (vd "dưới 20 triệu" -> 20000000)\n'
     '  "budget_min": số nguyên VND hoặc null\n'
-    '  "area_m2": số m² hoặc null (vd "phòng 18m2" -> 18)\n'
-    '  "room_type": "bedroom" | "living_room" | null\n'
-    '  "sunny": true | false | null (phòng nắng/hướng tây -> true)\n'
-    '  "priority": "quiet" | "fast_cooling" | "energy_saving" | "price" | null '
-    '(ít ồn->quiet, lạnh nhanh->fast_cooling, tiết kiệm điện->energy_saving, giá rẻ->price)\n'
-    '  "inverter_required": true | false | null\n'
-    '  "brands": mảng tên hãng hoặc [] (vd ["Daikin"])\n'
+    '  "usage": chuỗi ngắn hoàn cảnh/người dùng hoặc null (vd "cho trẻ em", "phòng ngủ", '
+    '"chơi game", "gia đình 4 người")\n'
+    '  "brands": mảng tên hãng hoặc [] (vd ["Daikin"], ["Samsung"])\n'
+    '  "priority": "quiet"|"fast_cooling"|"energy_saving"|"price"|null (chỉ dùng cho máy lạnh: '
+    "ít ồn->quiet, lạnh nhanh->fast_cooling, tiết kiệm điện->energy_saving, giá rẻ->price)\n"
+    '  "area_m2": số m² hoặc null (CHỈ máy lạnh, vd "phòng 18m2" -> 18)\n'
+    '  "room_type": "bedroom"|"living_room"|null (chỉ máy lạnh)\n'
+    '  "sunny": true|false|null (chỉ máy lạnh, phòng nắng/hướng tây -> true)\n'
+    '  "inverter_required": true|false|null (chỉ máy lạnh/tủ lạnh/máy giặt)\n'
     "Không suy đoán giá/thông số sản phẩm. Không chắc -> null. Chỉ JSON."
 )
 
@@ -122,12 +135,35 @@ def _parse_json(raw: str) -> dict[str, Any]:
     return obj
 
 
+def _coerce_category(v: Any) -> str | None:
+    if not isinstance(v, str) or not v.strip():
+        return None
+    s = v.strip().lower()
+    for cat in KNOWN_CATEGORIES:
+        if cat.lower() in s or s in cat.lower():
+            return cat
+    # loose aliases
+    aliases = {"điện thoại": "Điện thoại", "smartphone": "Điện thoại", "dt": "Điện thoại",
+               "điều hòa": "Máy lạnh", "máy tính": "Laptop", "tablet": "Máy tính bảng",
+               "tv": "Tivi", "loa": "Loa, Tai nghe", "tai nghe": "Loa, Tai nghe"}
+    for k, cat in aliases.items():
+        if k in s:
+            return cat
+    return None
+
+
+def _coerce_str(v: Any) -> str | None:
+    return v.strip() if isinstance(v, str) and v.strip() else None
+
+
 def coerce_profile(obj: dict[str, Any]) -> NeedProfile:
     """Validate/coerce a raw JSON dict into a NeedProfile. Unknown/invalid -> None."""
     return NeedProfile(
+        category=_coerce_category(obj.get("category")),
         budget_max=_coerce_price(obj.get("budget_max")),
         budget_min=_coerce_price(obj.get("budget_min")),
         area_m2=_coerce_area(obj.get("area_m2")),
+        usage=_coerce_str(obj.get("usage")),
         room_type=_coerce_enum(obj.get("room_type"), ROOM_TYPES),
         sunny=_coerce_bool(obj.get("sunny")),
         priority=_coerce_enum(obj.get("priority"), PRIORITIES),
@@ -136,8 +172,8 @@ def coerce_profile(obj: dict[str, Any]) -> NeedProfile:
     )
 
 
-_PROFILE_FIELDS = ("budget_max", "budget_min", "area_m2", "room_type", "sunny",
-                   "priority", "inverter_required", "brands")
+_PROFILE_FIELDS = ("category", "budget_max", "budget_min", "area_m2", "usage", "room_type",
+                   "sunny", "priority", "inverter_required", "brands")
 
 
 def merge_profiles(prior: NeedProfile, new: NeedProfile) -> NeedProfile:
@@ -157,9 +193,17 @@ def merge_profiles(prior: NeedProfile, new: NeedProfile) -> NeedProfile:
     return NeedProfile(**out)
 
 
+def required_slots(profile: NeedProfile) -> tuple[str, ...]:
+    """Critical slots depend on the category: mọi ngành cần category + budget; máy lạnh
+    cần thêm diện tích (để chọn công suất)."""
+    if profile.category == "Máy lạnh":
+        return ("category", "area_m2", "budget_max")
+    return ("category", "budget_max")
+
+
 def missing_slots(profile: NeedProfile) -> list[str]:
     """Required slots that are still null (drive hỏi-ngược follow-ups)."""
-    return [s for s in REQUIRED_SLOTS if getattr(profile, s) is None]
+    return [s for s in required_slots(profile) if getattr(profile, s) is None]
 
 
 def followups(slots: list[str]) -> list[str]:
@@ -175,29 +219,25 @@ def extract_need_profile(
     On any LLM/JSON failure returns an empty profile so every required slot reads as
     missing and the caller asks the user to restate (fail-safe, never fabricates).
     """
-    from antigravity.vector_db import search_few_shots
-    from antigravity.few_shot import get_segment_guidelines_prompt, get_few_shot_prompt
-    
-    # 1. Retrieve matching few-shot examples from Qdrant
+    # Few-shot + segment guidelines are OPTIONAL enrichment (Qdrant/vector_db). Import and
+    # call inside one guard so NLU still works if qdrant_client/vector_db is unavailable.
     few_shot_str = ""
-    try:
-        few_shots = search_few_shots(text, limit=2)
-        few_shot_str = get_few_shot_prompt(few_shots)
-    except Exception:
-        pass
-        
-    # 2. Retrieve dynamic segment guidelines based on query category
     guideline = ""
     lower = text.lower()
-    if "máy lạnh" in lower or "điều hòa" in lower:
-        guideline = get_segment_guidelines_prompt("Máy lạnh")
-    elif "tủ lạnh" in lower:
-        guideline = get_segment_guidelines_prompt("Tủ lạnh")
-    elif "laptop" in lower:
-        guideline = get_segment_guidelines_prompt("Laptop")
-    elif "pc" in lower or "máy tính" in lower:
-        guideline = get_segment_guidelines_prompt("Pc, máy in")
-        
+    try:
+        from antigravity.vector_db import search_few_shots
+        from antigravity.few_shot import get_segment_guidelines_prompt, get_few_shot_prompt
+        few_shot_str = get_few_shot_prompt(search_few_shots(text, limit=2))
+        seg = ("Máy lạnh" if ("máy lạnh" in lower or "điều hòa" in lower)
+               else "Tủ lạnh" if "tủ lạnh" in lower
+               else "Laptop" if "laptop" in lower
+               else "Pc, máy in" if ("pc" in lower or "máy tính" in lower)
+               else None)
+        if seg:
+            guideline = get_segment_guidelines_prompt(seg)
+    except Exception:
+        pass
+
     system_prompt = _SYSTEM_PROMPT
     if guideline:
         system_prompt += "\n" + guideline

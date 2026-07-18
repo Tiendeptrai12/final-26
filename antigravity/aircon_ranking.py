@@ -23,9 +23,11 @@ ROOM_TYPES = ("bedroom", "living_room")
 
 @dataclass
 class NeedProfile:
+    category: str | None = None            # DMX category_name, e.g. "Máy lạnh" | "Điện thoại"
     budget_max: int | None = None          # VND, hard
     budget_min: int | None = None          # VND, hard
-    area_m2: float | None = None           # room size, hard (capacity fit)
+    area_m2: float | None = None           # room size, hard (capacity fit) — aircon-specific
+    usage: str | None = None               # free-text hoàn cảnh dùng (mọi ngành)
     room_type: str | None = None           # "bedroom" | "living_room"
     sunny: bool | None = None              # direct sun -> capacity headroom
     priority: str | None = None            # one of PRIORITIES

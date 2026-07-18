@@ -102,10 +102,13 @@ class TestProductAdvisor:
         assert required_keys <= set(result.keys())
 
     def test_mock_catalog_fallback_when_vector_empty(self, advisor, monkeypatch):
-        # When the vector catalog returns nothing, _scan_catalog_with_llama falls back to the
-        # static mock (real Qdrant data would otherwise return real product ids).
-        import antigravity.vector_db as vdb
-        monkeypatch.setattr(vdb, "search_products", lambda *a, **k: [])
+        # When the vector catalog yields nothing (empty results, or qdrant not installed so
+        # the import fails), _scan_catalog_with_llama must fall back to the static mock.
+        try:
+            import antigravity.vector_db as vdb
+            monkeypatch.setattr(vdb, "search_products", lambda *a, **k: [])
+        except Exception:
+            pass  # no qdrant_client -> core's guarded import already routes to the mock
         results = advisor._scan_catalog_with_llama("all")
         ids = [p["id"] for p in results]
         assert "1" in ids  # Máy Lạnh Daikin (mock fallback)
