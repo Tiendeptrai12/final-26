@@ -55,3 +55,20 @@ data/dmx/
 libs/
 *.zip
 *.pptx
+
+# Teammate backup snapshot (5000+ files) — not part of this repo's build
+backend_final-main/
+
+# Agent/workspace + local noise (keep Source Control panel clean, prevent leaks)
+.claude/
+memory.md
+
+# Demo catalog = REAL DMX product records (subset) => NDA. Never commit/deploy.
+demo_catalog/
+
+# Secrets / local briefs / binaries (never commit)
+FPT Factory API Key.txt
+*.png
+*.docx
+*.docx.pdf
+*.pdf
