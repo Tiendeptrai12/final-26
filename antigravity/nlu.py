@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from antigravity import fpt_client
@@ -263,17 +264,43 @@ def extract_need_profile(
     return profile, missing_slots(profile), obj
 
 
+# category_name -> ranker. Only aircon + phone have a dedicated engine so far; other
+# categories fall through to CATEGORY_RANKER.get(cat) is None -> handled by caller
+# (vector rerank only, no code ranking yet — see docs/capability_architecture.md).
+CATEGORY_RANKER = {"Máy lạnh": "aircon", "Điện thoại": "phone"}
+
+
+@dataclass
+class _SimpleResult:
+    """Uniform result shape so build_chat_response doesn't care which ranker ran."""
+    items: list[Any]
+    relaxations: list[str]
+
+
+def _phone_need_from_profile(profile: NeedProfile):
+    from antigravity.phone_ranking import PHONE_PRIORITIES, PhoneNeed
+    # aircon priority vocab ("quiet"/"fast_cooling"/...) only "price" overlaps phone's
+    # vocab; anything else -> no phone priority (weights stay balanced, never guessed).
+    prio = profile.priority if profile.priority in PHONE_PRIORITIES else None
+    return PhoneNeed(budget_max=profile.budget_max, budget_min=profile.budget_min,
+                     priority=prio, brands=list(profile.brands))
+
+
 def advise(
     text: str, history: list[dict[str, str]] | None = None, *,
     records: list[dict[str, Any]] | None = None, n: int = 3, timeout: float = 3.0,
     prior_profile: dict[str, Any] | None = None, pool: int | None = None,
 ) -> dict[str, Any]:
-    """Full BTC turn: extract -> merge prior slots -> ask-if-missing -> rank_top.
+    """Full turn: extract -> merge prior slots -> ask-if-missing -> rank (category-routed).
 
     `prior_profile` (dict from the previous turn's response) carries slots forward so a
     follow-up answer doesn't drop earlier needs. Returns a dict:
       {"status": "need_info", "profile": {...}, "missing": [...], "questions": [...]}
-      {"status": "ok",        "profile": {...}, "result": RankResult}
+      {"status": "ok",        "profile": {...}, "result": <items+relaxations>}
+    Ranking is routed by `profile.category`: "Máy lạnh" -> rank_top (aircon engine),
+    "Điện thoại" -> phone_ranking.rank_phones. Other categories have no dedicated ranker
+    yet — they return empty items (no-results terminal) rather than silently misranking
+    with the wrong engine.
     """
     profile, _missing, raw = extract_need_profile(text, history, timeout=timeout)
     if prior_profile:
@@ -290,7 +317,18 @@ def advise(
             "raw_llm": raw,
         }
 
-    result: RankResult = rank_top(profile, records=records, n=n, pool=pool)
+    ranker = CATEGORY_RANKER.get(profile.category or "")
+    if ranker == "phone":
+        from antigravity import phone_ranking
+        phone_records = records if records is not None else phone_ranking.load_default_records()
+        items = phone_ranking.rank_phones(_phone_need_from_profile(profile), phone_records, n=n)
+        result: Any = _SimpleResult(items=items, relaxations=[])
+    elif ranker == "aircon":
+        result = rank_top(profile, records=records, n=n, pool=pool)
+    else:
+        # no dedicated ranker for this category yet -> honest empty, not a wrong-engine guess
+        result = _SimpleResult(items=[], relaxations=[])
+
     return {"status": "ok", "profile": profile_dict, "result": result, "raw_llm": raw}
 
 

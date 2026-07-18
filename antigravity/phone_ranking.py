@@ -6,11 +6,33 @@ hallucinated. Public: rank_phones(need, records, n=3) -> list[PhoneItem].
 """
 from __future__ import annotations
 
+import json
+import os
 import re
 from dataclasses import dataclass, field
 from typing import Any
 
 PHONE_PRIORITIES = ("price", "battery", "storage", "performance", "screen", "camera")
+
+_BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# In-repo NDA copy (gitignored), same source as vector_db.NEW_CATALOG_PATH — duplicated as a
+# plain constant (not an import) so this module never pulls in qdrant_client just to rank.
+_CATALOG_PATH = os.environ.get(
+    "DMX_CATALOG_PATH", os.path.join(_BASE_DIR, "data", "raw", "dmx", "products_detail.json"),
+)
+
+
+def load_default_records(category_name: str = "Điện thoại") -> list[dict[str, Any]]:
+    """Raw DMX records for one category, straight from the NDA json (gitignored).
+
+    [] if the file isn't present (e.g. mock/Vercel env with no bundled data) — callers must
+    treat that as "no candidates", never fabricate phones.
+    """
+    if not os.path.exists(_CATALOG_PATH):
+        return []
+    with open(_CATALOG_PATH, encoding="utf-8") as f:
+        data = json.load(f)
+    return [p for p in data if p.get("category_name") == category_name]
 
 
 @dataclass
