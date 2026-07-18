@@ -64,12 +64,16 @@ def chat_completion(
     response_format: dict[str, Any] | None = None,
     base_url: str | None = None,
     provider: str = "fpt",
+    extra_body: dict[str, Any] | None = None,
 ) -> str:
     """POST /chat/completions and return the first choice's message content.
 
     `provider` selects the endpoint + key from PROVIDERS ("fpt" | "zai"); an explicit
-    `base_url` still overrides. Deterministic by default (temperature=0). Raises FPTError
-    on any problem so the caller can degrade gracefully instead of blocking past the SLA.
+    `base_url` still overrides. `extra_body` is merged into the JSON payload — used to pass
+    vendor knobs like GLM's chat_template_kwargs={"enable_thinking": False}, which turns off
+    the reasoning model's thinking so it emits the answer directly (fast, SLA-friendly)
+    instead of spending the whole token budget thinking. Deterministic by default
+    (temperature=0). Raises FPTError on any problem so the caller can degrade gracefully.
     """
     cfg = PROVIDERS.get(provider, PROVIDERS["fpt"])
     resolved_url = base_url or cfg["base_url"]
@@ -82,6 +86,8 @@ def chat_completion(
     }
     if response_format is not None:
         payload["response_format"] = response_format
+    if extra_body:
+        payload.update(extra_body)
 
     data = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(

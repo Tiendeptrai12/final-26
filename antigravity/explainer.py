@@ -16,15 +16,20 @@ from typing import Any
 from antigravity import fpt_client
 from antigravity.aircon_ranking import NeedProfile
 
-# Call B (grounded trade-off prose) = the reasoning-heavy step, so it runs on the BRAIN:
-# z.ai glm-5.2 (default). FPT models are the fast SERVICE tier (NLU gemma in nlu.py, and
-# bge-reranker/embeddings) — z.ai is reserved for where reasoning quality pays off, which
-# is this comparison. Cost: z.ai ~6-8s, over the <5s target; if you must hold the SLA hard,
-# set EXPLAIN_PROVIDER=fpt (gemma ~2.6s). Model auto-picks per provider so you never send
-# z.ai's model id to FPT; override with EXPLAIN_MODEL. On failure -> per-item reasons[].
-_DEFAULT_MODELS = {"zai": "z-ai/glm-5.2", "fpt": "gemma-4-31B-it"}
-EXPLAIN_PROVIDER = os.environ.get("EXPLAIN_PROVIDER", "zai")
-EXPLAIN_MODEL = os.environ.get("EXPLAIN_MODEL") or _DEFAULT_MODELS.get(EXPLAIN_PROVIDER, "z-ai/glm-5.2")
+# Call B (grounded trade-off prose) = the reasoning step, so it runs on the BRAIN model:
+# GLM-5.2 (z.ai's model), but served via FPT infra with thinking DISABLED. Measured:
+#   - GLM-5.2 on z.ai/NVIDIA endpoint: 7-19s (infra-bound) -> blows the <5s SLA
+#   - GLM-5.2 on FPT + enable_thinking=false: ~1.6-2s, grounded prose -> holds SLA
+# So same brain, faster endpoint, one key. FPT is otherwise the service tier (NLU gemma,
+# bge-reranker/embeddings). To force the raw z.ai/NVIDIA endpoint instead (slower, richer),
+# set EXPLAIN_PROVIDER=zai + EXPLAIN_MODEL=z-ai/glm-5.2. On any failure -> per-item reasons[].
+_DEFAULT_MODELS = {"fpt": "GLM-5.2", "zai": "z-ai/glm-5.2"}
+EXPLAIN_PROVIDER = os.environ.get("EXPLAIN_PROVIDER", "fpt")
+EXPLAIN_MODEL = os.environ.get("EXPLAIN_MODEL") or _DEFAULT_MODELS.get(EXPLAIN_PROVIDER, "GLM-5.2")
+
+# GLM is a reasoning model: without this it spends the whole token budget "thinking" and
+# returns empty content (finish_reason=length). Disabling thinking makes it answer directly.
+_GLM_NOTHINK = {"chat_template_kwargs": {"enable_thinking": False}}
 
 _SYSTEM = (
     "Bạn là tư vấn viên máy lạnh của Điện Máy Xanh. Bạn nhận một danh sách sản phẩm ĐÃ được "
@@ -86,10 +91,12 @@ def explain_top(
         {"role": "system", "content": _SYSTEM},
         {"role": "user", "content": _facts_block(items, profile)},
     ]
+    # GLM reasoning models need thinking off to answer directly (see _GLM_NOTHINK).
+    extra_body = _GLM_NOTHINK if "glm" in model.lower() else None
     try:
         text = fpt_client.chat_completion(
             model, messages, max_tokens=max_tokens, temperature=0.3, timeout=timeout,
-            provider=provider,
+            provider=provider, extra_body=extra_body,
         )
     except fpt_client.FPTError:
         return None
