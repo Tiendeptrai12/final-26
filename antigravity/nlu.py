@@ -17,7 +17,7 @@ import json
 import re
 from typing import Any
 
-from antigravity import fpt_client
+from antigravity import fpt_client, order
 from antigravity.aircon_ranking import (
     PRIORITIES, ROOM_TYPES, NeedProfile, RankedItem, RankResult, rank_top,
 )
@@ -250,16 +250,25 @@ def build_chat_response(
     text: str, history: list[dict[str, str]] | None = None, *,
     records: list[dict[str, Any]] | None = None, n: int = 3, timeout: float = 3.0,
     explain: bool = True, prior_profile: dict[str, Any] | None = None,
+    selected_product: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Wrap advise() into a flat, frontend-friendly, JSON-safe contract.
 
     Shape:
-      {query, mode: "need_info"|"recommendation", message, questions[], profile{},
+      {query, mode: "need_info"|"recommendation"|"order", message, questions[], profile{},
        items[], relaxations[], explanation, safety_checked}
     Prices/specs come ONLY from ranked records (code), never from the LLM. `explanation`
     is grounded Top-3 trade-off prose (Call B); None if disabled or the explainer fails
-    (deterministic per-item reasons[] still carry the grounding).
+    (deterministic per-item reasons[] still carry the grounding). Buy intent short-circuits
+    to an order confirmation (create_order_dmx) — no ranking/LLM call.
     """
+    # buy-flow close: deterministic intent check, grounded order from the selected item
+    if order.detect_order_intent(text):
+        resp = order.build_order_response(selected_product)
+        resp["query"] = text
+        resp["profile"] = prior_profile or {}
+        return resp
+
     out = advise(text, history, records=records, n=n, timeout=timeout,
                  prior_profile=prior_profile)
     base: dict[str, Any] = {
