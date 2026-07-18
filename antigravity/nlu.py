@@ -380,7 +380,7 @@ def _advise_from_fit(fit: dict[str, Any]) -> str:
     return f"{name} phù hợp một phần; một số tiêu chí chưa có dữ liệu."
 
 
-def build_chat_response(
+def _build_chat_response_raw(
     text: str, history: list[dict[str, str]] | None = None, *,
     records: list[dict[str, Any]] | None = None, n: int = 3, timeout: float = 3.0,
     explain: bool = True, prior_profile: dict[str, Any] | None = None,
@@ -486,5 +486,34 @@ def build_chat_response(
             # over the <5s target — switch EXPLAIN_PROVIDER=fpt (gemma ~2.6s) if the SLA
             # must hold hard. On any failure explain_top returns None and the per-item
             # reasons[] still carry the grounding.
-            base["explanation"] = explain_top(base["items"], profile, timeout=8.0)
+            base["explanation"] = explain_top(base["items"], profile, query=text, timeout=8.0)
     return base
+
+
+def build_chat_response(
+    text: str, history: list[dict[str, str]] | None = None, *,
+    records: list[dict[str, Any]] | None = None, n: int = 3, timeout: float = 3.0,
+    explain: bool = True, prior_profile: dict[str, Any] | None = None,
+    selected_products: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    from antigravity.guardrails import check_input_safety, check_output_safety
+
+    # 1. Run Input Guardrails
+    safety_resp = check_input_safety(text)
+    if safety_resp is not None:
+        return safety_resp
+
+    # 2. Run Normal Advisor Logic
+    res = _build_chat_response_raw(
+        text, history, records=records, n=n, timeout=timeout,
+        explain=explain, prior_profile=prior_profile,
+        selected_products=selected_products
+    )
+
+    # 3. Run Output Guardrails on the advisor messages
+    if "message" in res and res["message"]:
+        res["message"] = check_output_safety(res["message"])
+    if "explanation" in res and res["explanation"]:
+        res["explanation"] = check_output_safety(res["explanation"])
+
+    return res
