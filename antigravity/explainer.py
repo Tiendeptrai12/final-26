@@ -16,12 +16,14 @@ from typing import Any
 from antigravity import fpt_client
 from antigravity.aircon_ranking import NeedProfile
 
-# Call B (grounded prose) runs on z.ai glm-5.2 via NVIDIA integrate — teammate's key.
-# Call A (NLU, fast JSON) stays on FPT gemma. Split uses both team keys where each fits.
-# On any z.ai failure the caller falls back to deterministic code reasons[], so a turn
-# never blocks. Override via EXPLAIN_MODEL / EXPLAIN_PROVIDER env if needed.
-EXPLAIN_MODEL = os.environ.get("EXPLAIN_MODEL", "z-ai/glm-5.2")
-EXPLAIN_PROVIDER = os.environ.get("EXPLAIN_PROVIDER", "zai")
+# Call B (grounded prose). DEFAULT provider = fpt gemma (~2.6s) to hold the <5s SLA hard.
+# z.ai glm-5.2 (~6s, teammate key) gives richer prose but breaks the SLA — opt in with
+# EXPLAIN_PROVIDER=zai. Model auto-picks per provider so you never send z.ai's model id to
+# FPT (or vice-versa); override explicitly with EXPLAIN_MODEL. On any failure the caller
+# falls back to deterministic per-item reasons[], so a turn never blocks.
+_DEFAULT_MODELS = {"fpt": "gemma-4-31B-it", "zai": "z-ai/glm-5.2"}
+EXPLAIN_PROVIDER = os.environ.get("EXPLAIN_PROVIDER", "fpt")
+EXPLAIN_MODEL = os.environ.get("EXPLAIN_MODEL") or _DEFAULT_MODELS.get(EXPLAIN_PROVIDER, "gemma-4-31B-it")
 
 _SYSTEM = (
     "Bạn là tư vấn viên máy lạnh của Điện Máy Xanh. Bạn nhận một danh sách sản phẩm ĐÃ được "
